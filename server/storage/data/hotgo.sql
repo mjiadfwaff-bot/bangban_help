@@ -542,7 +542,7 @@ CREATE TABLE IF NOT EXISTS `hg_sys_addons_config` (
   `name` varchar(100) DEFAULT '' COMMENT '参数名称',
   `type` varchar(32) NOT NULL COMMENT '键值类型:string,int,uint,bool,datetime,date',
   `key` varchar(100) DEFAULT '' COMMENT '参数键名',
-  `value` varchar(500) DEFAULT '' COMMENT '参数键值',
+  `value` longtext COMMENT '参数键值',
   `default_value` varchar(500) NOT NULL COMMENT '默认值',
   `sort` int(11) NOT NULL DEFAULT '0' COMMENT '排序',
   `tip` varchar(500) DEFAULT NULL COMMENT '变量描述',
@@ -649,6 +649,7 @@ CREATE TABLE IF NOT EXISTS `hg_sys_config` (
 -- 转存表中的数据 `hg_sys_config`
 --
 
+INSERT IGNORE INTO `hg_sys_config` (`id`, `group`, `name`, `type`, `key`, `value`, `default_value`, `sort`, `tip`, `is_default`, `status`, `created_at`, `updated_at`) VALUES
 (29, 'upload', '上传图片大小限制', 'int', 'uploadImageSize', '1', '2', 310, '单位：MB', 1, 1, '2021-01-30 13:27:43', '2024-02-28 16:56:35'),
 (30, 'upload', '上传图片类型限制', 'string', 'uploadImageType', 'jpg,jpeg,gif,npm,png,svg', 'jpg,jpeg,gif,npm,png,svg', 320, '图片上传后缀类型限制', 1, 1, '2021-01-30 13:27:43', '2024-02-28 16:56:35'),
 (31, 'upload', '上传文件大小限制', 'int', 'uploadFileSize', '1000', '10', 330, '单位：MB', 1, 1, '2021-01-30 13:27:43', '2024-02-28 16:56:35'),

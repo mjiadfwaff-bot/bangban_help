@@ -123,6 +123,7 @@
           </n-space>
         </template>
       </n-modal>
+      <ConfigModal ref="configRef" />
     </n-card>
   </div>
 </template>
@@ -132,11 +133,12 @@
   import { NIcon, useMessage, useDialog, useNotification } from 'naive-ui';
   import { BasicTable, TableAction } from '@/components/Table';
   import { BasicForm, useForm } from '@/components/Form/index';
-  import { List, Build, UnInstall, Install, Upgrade } from '@/api/develop/addons';
+  import { List, Build, UnInstall, Install, Upgrade, Enable, Disable } from '@/api/develop/addons';
   import { PlusOutlined } from '@vicons/antd';
   import { newState, schemas, columns, loadOptions } from './model';
   import { adaModalWidth } from '@/utils/hotgo';
   import { useDictStore } from '@/store/modules/dict';
+  import ConfigModal from './configModal.vue';
 
   const dict = useDictStore();
   const dialog = useDialog();
@@ -146,6 +148,7 @@
   const formBtnLoading = ref(false);
   const formRef: any = ref(null);
   const actionRef = ref();
+  const configRef = ref();
   const formParams = ref<any>();
   const checkedIds = ref([]);
   const searchFormRef = ref<any>();
@@ -154,7 +157,7 @@
   });
 
   const actionColumn = reactive({
-    width: 220,
+    width: 300,
     title: '操作',
     key: 'action',
     fixed: 'right',
@@ -167,6 +170,29 @@
             onClick: handleInstall.bind(null, record),
             ifShow: () => {
               return record.installStatus !== 1;
+            },
+          },
+          {
+            label: '配置',
+            onClick: handleConfig.bind(null, record),
+            ifShow: () => {
+              return record.installStatus === 1;
+            },
+          },
+          {
+            type: 'warning',
+            label: '关闭',
+            onClick: handleDisable.bind(null, record),
+            ifShow: () => {
+              return record.installStatus === 1;
+            },
+          },
+          {
+            type: 'success',
+            label: '启用',
+            onClick: handleEnable.bind(null, record),
+            ifShow: () => {
+              return record.installStatus === 4;
             },
           },
           {
@@ -216,6 +242,40 @@
       negativeText: '取消',
       onPositiveClick: () => {
         Install(record).then((_res) => {
+          message.success('操作成功');
+          reloadTable();
+        });
+      },
+    });
+  }
+
+  function handleConfig(record: Recordable) {
+    configRef.value?.openModal(record);
+  }
+
+  function handleEnable(record: Recordable) {
+    dialog.info({
+      title: '提示',
+      content: '你确定要启用 【' + record.label + '】 模块？启用后建议重启服务确保路由和定时任务完全生效。',
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        Enable(record).then((_res) => {
+          message.success('操作成功');
+          reloadTable();
+        });
+      },
+    });
+  }
+
+  function handleDisable(record: Recordable) {
+    dialog.warning({
+      title: '提示',
+      content: '你确定要关闭 【' + record.label + '】 模块？关闭后建议重启服务确保路由和定时任务完全停用。',
+      positiveText: '确定',
+      negativeText: '取消',
+      onPositiveClick: () => {
+        Disable(record).then((_res) => {
           message.success('操作成功');
           reloadTable();
         });

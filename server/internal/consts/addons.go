@@ -56,9 +56,10 @@ var AddonsGroupIconMap = map[int]string{
 }
 
 const (
-	AddonsInstallStatusOk = 1 // 已安装
-	AddonsInstallStatusNo = 2 // 未安装
-	AddonsInstallStatusUn = 3 // 已卸载
+	AddonsInstallStatusOk       = 1 // 已安装
+	AddonsInstallStatusNo       = 2 // 未安装
+	AddonsInstallStatusUn       = 3 // 已卸载
+	AddonsInstallStatusDisabled = 4 // 已禁用
 )
 
 // AddonsInstallStatusOptions 插件安装状态
@@ -66,6 +67,7 @@ var AddonsInstallStatusOptions = []*model.Option{
 	dict.GenInfoOption(AddonsInstallStatusOk, "已安装"),
 	dict.GenInfoOption(AddonsInstallStatusNo, "未安装"),
 	dict.GenInfoOption(AddonsInstallStatusUn, "已卸载"),
+	dict.GenWarningOption(AddonsInstallStatusDisabled, "已禁用"),
 }
 
 const (

@@ -25,3 +25,51 @@ type UpdateReq struct {
 }
 
 type UpdateRes struct{}
+
+type InspectBotReq struct {
+	g.Meta `path:"/config/inspectBot" method:"post" tags:"懒羊羊TGGo" summary:"检测机器人"`
+	sysin.BotInspectInp
+}
+
+type InspectBotRes struct {
+	*sysin.BotInspectModel
+}
+
+type DeleteBotReq struct {
+	g.Meta `path:"/config/deleteBot" method:"post" tags:"懒羊羊TGGo" summary:"删除机器人"`
+	sysin.BotDeleteInp
+}
+
+type DeleteBotRes struct{}
+
+type StartBotReq struct {
+	g.Meta `path:"/config/startBot" method:"post" tags:"懒羊羊TGGo" summary:"启动机器人"`
+	sysin.BotStartInp
+}
+
+type StartBotRes struct{}
+
+type BotUsersReq struct {
+	g.Meta `path:"/config/botUsers" method:"get" tags:"懒羊羊TGGo" summary:"机器人用户列表"`
+	sysin.BotUserListInp
+}
+
+type BotUsersRes struct {
+	List []*sysin.BotUserListModel `json:"list"`
+}
+
+type UpdateBotUserReq struct {
+	g.Meta `path:"/config/updateBotUser" method:"post" tags:"懒羊羊TGGo" summary:"更新机器人用户"`
+	sysin.BotUserEditInp
+}
+
+type UpdateBotUserRes struct{}
+
+type TestTelegramProxyReq struct {
+	g.Meta `path:"/config/testTelegramProxy" method:"post" tags:"懒羊羊TGGo" summary:"检测Telegram代理"`
+	sysin.TelegramProxyTestInp
+}
+
+type TestTelegramProxyRes struct {
+	*sysin.TelegramProxyTestModel
+}

@@ -55,3 +55,19 @@ export function UnInstall(params) {
     params,
   });
 }
+
+export function Enable(params) {
+  return http.request({
+    url: '/addons/enable',
+    method: 'post',
+    params,
+  });
+}
+
+export function Disable(params) {
+  return http.request({
+    url: '/addons/disable',
+    method: 'post',
+    params,
+  });
+}

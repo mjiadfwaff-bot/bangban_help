@@ -55,13 +55,71 @@ type BotUpsertInp struct {
 	ReviewEnabled bool   `json:"reviewEnabled"`
 }
 
+type BotInspectInp struct {
+	Token string `json:"token"`
+}
+
+type BotInspectModel struct {
+	Id          int64  `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	IsBot       bool   `json:"isBot"`
+}
+
+type BotDeleteInp struct {
+	Key string `json:"key"`
+}
+
+type BotStartInp struct {
+	Key string `json:"key"`
+}
+
+type TelegramProxyTestInp struct {
+	TelegramProxy string `json:"telegramProxy"`
+}
+
+type TelegramProxyTestModel struct {
+	Ok bool `json:"ok"`
+}
+
 type TouchUserInp struct {
 	TelegramID   int64  `json:"telegramId"`
+	BotKey       string `json:"botKey"`
 	Username     string `json:"username"`
 	FirstName    string `json:"firstName"`
 	LastName     string `json:"lastName"`
 	LanguageCode string `json:"languageCode"`
 	IsBot        bool   `json:"isBot"`
+}
+
+type BotUserListInp struct {
+	BotKey      string `json:"botKey"`
+	Keyword     string `json:"keyword"`
+	MemberLevel int    `json:"memberLevel"`
+	Status      int    `json:"status"`
+}
+
+type BotUserListModel struct {
+	Id           int     `json:"id"`
+	TelegramID   int64   `json:"telegramId"`
+	BotKey       string  `json:"botKey"`
+	Username     string  `json:"username"`
+	FirstName    string  `json:"firstName"`
+	LastName     string  `json:"lastName"`
+	LanguageCode string  `json:"languageCode"`
+	IsBot        bool    `json:"isBot"`
+	MemberLevel  int     `json:"memberLevel"`
+	Points       float64 `json:"points"`
+	Status       int     `json:"status"`
+	LastActiveAt string  `json:"lastActiveAt"`
+	CreatedAt    string  `json:"createdAt"`
+}
+
+type BotUserEditInp struct {
+	Id          int     `json:"id"`
+	MemberLevel int     `json:"memberLevel"`
+	Points      float64 `json:"points"`
+	Status      int     `json:"status"`
 }
 
 type BindSourceInp struct {

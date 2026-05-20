@@ -15,19 +15,28 @@ type (
 		Install(ctx context.Context) error
 		Upgrade(ctx context.Context) error
 		UnInstall(ctx context.Context) error
+		BootBots(ctx context.Context) error
 
 		GetState(ctx context.Context) (res *model.State, err error)
 		SaveState(ctx context.Context, state *model.State) error
+		SaveConfig(ctx context.Context, in *sysin.UpdateConfigInp) error
+		InspectBot(ctx context.Context, in *sysin.BotInspectInp) (res *sysin.BotInspectModel, err error)
+		DeleteBot(ctx context.Context, in *sysin.BotDeleteInp) error
+		StartBot(ctx context.Context, in *sysin.BotStartInp) error
+		BotUsers(ctx context.Context, in *sysin.BotUserListInp) (list []*sysin.BotUserListModel, err error)
+		UpdateBotUser(ctx context.Context, in *sysin.BotUserEditInp) error
+		TestTelegramProxy(ctx context.Context, in *sysin.TelegramProxyTestInp) (res *sysin.TelegramProxyTestModel, err error)
 		TouchUser(ctx context.Context, in *sysin.TouchUserInp) error
 		UpsertBot(ctx context.Context, in *sysin.BotUpsertInp) (key string, err error)
 		BindSource(ctx context.Context, in *sysin.BindSourceInp) error
 		PullNow(ctx context.Context, in *sysin.PullInp) (message string, err error)
 		SignIn(ctx context.Context, in *sysin.SignInInp) (message string, err error)
+		StoreNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error)
 
 		GetRuntime(ctx context.Context, botKey string) (rt *model.Runtime, err error)
 		SyncBot(ctx context.Context, botKey string) error
 		SyncAllBots(ctx context.Context) error
-		HandleWebhook(ctx context.Context, botKey string, payload []byte) error
+		HandleWebhook(ctx context.Context, botKey string, payload []byte, secretToken string) error
 		SetWebhook(ctx context.Context, botKey, webhookURL string) error
 	}
 )

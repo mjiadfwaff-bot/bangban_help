@@ -11,7 +11,12 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"hotgo/addons/lazysheep_tggo/model"
 )
+
+type contextKey string
+
+const botKeyContextKey contextKey = "lazysheep_tggo_bot_key"
 
 type MessageHandler interface {
 	Key() string
@@ -29,9 +34,43 @@ type CallbackHandler interface {
 	Handle(ctx context.Context, b *bot.Bot, update *models.Update) error
 }
 
+type TriggerType string
+
+const (
+	TriggerStart      TriggerType = "start"
+	TriggerMenuButton TriggerType = "menu_button"
+)
+
+type PluginRequest struct {
+	Trigger TriggerType
+	BotKey  string
+	Text    string
+	Update  *models.Update
+}
+
+func WithBotKey(ctx context.Context, botKey string) context.Context {
+	return context.WithValue(ctx, botKeyContextKey, botKey)
+}
+
+func CurrentBotKey(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(botKeyContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+type BotPlugin interface {
+	Key() string
+	Handle(ctx context.Context, b *bot.Bot, req *PluginRequest, cfg *model.PluginConfig, plugins map[string]*model.PluginConfig) (bool, error)
+}
+
 var (
 	messageHandlers  = make([]MessageHandler, 0, 8)
 	callbackHandlers = make([]CallbackHandler, 0, 8)
+	botPlugins       = make([]BotPlugin, 0, 8)
 	handlerMu        sync.RWMutex
 )
 
@@ -47,6 +86,12 @@ func RegisterCallbackHandler(h CallbackHandler) {
 	callbackHandlers = append(callbackHandlers, h)
 }
 
+func RegisterBotPlugin(p BotPlugin) {
+	handlerMu.Lock()
+	defer handlerMu.Unlock()
+	botPlugins = append(botPlugins, p)
+}
+
 func MessageHandlers() []MessageHandler {
 	handlerMu.RLock()
 	defer handlerMu.RUnlock()
@@ -60,5 +105,13 @@ func CallbackHandlers() []CallbackHandler {
 	defer handlerMu.RUnlock()
 	out := make([]CallbackHandler, len(callbackHandlers))
 	copy(out, callbackHandlers)
+	return out
+}
+
+func BotPlugins() []BotPlugin {
+	handlerMu.RLock()
+	defer handlerMu.RUnlock()
+	out := make([]BotPlugin, len(botPlugins))
+	copy(out, botPlugins)
 	return out
 }

@@ -2,16 +2,25 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "HotGo Server (Debug)",
-      "type": "go",
+      "name": "HotGo Server (Hot Reload)",
+      "type": "node-terminal",
       "request": "launch",
-      "mode": "debug",
-      "program": "${workspaceFolder}/server",
-      "cwd": "${workspaceFolder}/server",
-      "console": "integratedTerminal",
-      "env": {
-        "GF_ENV": "develop"
-      }
+      "command": "make all",
+      "cwd": "${workspaceFolder}/server"
+    },
+    {
+      "name": "HotGo Web (Hot Reload)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "pnpm dev",
+      "cwd": "${workspaceFolder}/web"
+    },
+    {
+      "name": "HotGo Full Stack (Hot Reload)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bash -lc 'cd server && make all & cd ../web && pnpm dev'",
+      "cwd": "${workspaceFolder}"
     }
   ]
 }

@@ -62,3 +62,13 @@ type AddonsUpgradeInp struct {
 type AddonsUnInstallInp struct {
 	addons.Skeleton
 }
+
+// AddonsEnableInp 启用模块
+type AddonsEnableInp struct {
+	addons.Skeleton
+}
+
+// AddonsDisableInp 停用模块
+type AddonsDisableInp struct {
+	addons.Skeleton
+}

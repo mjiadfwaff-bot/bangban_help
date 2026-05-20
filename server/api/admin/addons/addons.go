@@ -57,3 +57,21 @@ type UnInstallReq struct {
 
 type UnInstallRes struct {
 }
+
+// EnableReq 启用模块
+type EnableReq struct {
+	g.Meta `path:"/addons/enable" method:"post" tags:"插件管理" summary:"启用模块"`
+	sysin.AddonsEnableInp
+}
+
+type EnableRes struct {
+}
+
+// DisableReq 停用模块
+type DisableReq struct {
+	g.Meta `path:"/addons/disable" method:"post" tags:"插件管理" summary:"停用模块"`
+	sysin.AddonsDisableInp
+}
+
+type DisableRes struct {
+}

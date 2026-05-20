@@ -8,18 +8,21 @@ package sys
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 	"hotgo/addons/lazysheep_tggo/model"
+	lsysin "hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/internal/dao"
 	"hotgo/internal/model/entity"
 )
 
 func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err error) {
 	res = model.NewState()
+	res.Normalize()
 
 	var bots []*entity.AddonLazysheepTggoBot
 	if err = dao.AddonLazysheepTggoBot.Ctx(ctx).OrderAsc(dao.AddonLazysheepTggoBot.Columns().Id).Scan(&bots); err != nil {
@@ -47,6 +50,14 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 			CreatedAt:     row.CreatedAt,
 			UpdatedAt:     row.UpdatedAt,
 		}
+		s.fillBotRuntimeStatus(key, res.Bots[key])
+		res.Settings = &model.Settings{
+			AllowVerify:   row.AllowVerify > 0,
+			AllowLocation: row.AllowLocation > 0,
+			MemberVerify:  memberVerifyLabel(row.MemberVerify),
+			MemberPoints:  fmt.Sprintf("%d", row.MemberPoints),
+			SignFollow:    row.SignFollow > 0,
+		}
 	}
 
 	var users []*entity.AddonLazysheepTggoUser
@@ -59,11 +70,16 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 		}
 		res.Users[int64(row.TelegramId)] = &model.UserRecord{
 			TelegramID:   int64(row.TelegramId),
+			BotKey:       "",
 			Username:     row.Username,
 			FirstName:    row.FirstName,
 			LastName:     row.LastName,
 			LanguageCode: row.LanguageCode,
 			IsBot:        row.IsBot > 0,
+			MemberLevel:  row.MemberLevel,
+			Points:       row.Points,
+			Status:       row.Status,
+			LastActiveAt: row.LastActiveAt,
 			CreatedAt:    row.CreatedAt,
 			UpdatedAt:    row.UpdatedAt,
 		}
@@ -94,6 +110,15 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 			UpdatedAt:     row.UpdatedAt,
 		}
 	}
+	if err = s.loadPlugins(ctx, res); err != nil {
+		return nil, err
+	}
+	if err = s.loadGlobal(ctx, res); err != nil {
+		return nil, err
+	}
+	if err = s.loadBotPlugins(ctx, res); err != nil {
+		return nil, err
+	}
 
 	res.Normalize()
 	return
@@ -105,12 +130,12 @@ func (s *sLazySheepTGGo) saveState(ctx context.Context, state *model.State) erro
 	}
 	state.Normalize()
 
-	return dao.AddonLazysheepTggoBot.Transaction(ctx, func(ctx context.Context, tx gdb.TX) (err error) {
+	if err := dao.AddonLazysheepTggoBot.Transaction(ctx, func(ctx context.Context, tx gdb.TX) (err error) {
 		for key, item := range state.Bots {
 			if item == nil {
 				continue
 			}
-			if err = s.upsertBot(ctx, key, item); err != nil {
+			if err = s.upsertBot(ctx, key, item, state.Settings); err != nil {
 				return err
 			}
 		}
@@ -130,11 +155,38 @@ func (s *sLazySheepTGGo) saveState(ctx context.Context, state *model.State) erro
 				return err
 			}
 		}
+		if err = s.savePlugins(ctx, state.Plugins); err != nil {
+			return err
+		}
+		if err = s.saveGlobal(ctx, state.Global); err != nil {
+			return err
+		}
+		if err = s.saveBotPlugins(ctx, state.Bots); err != nil {
+			return err
+		}
 		return
-	})
+	}); err != nil {
+		return err
+	}
+	return s.syncWebhooksAfterSave(ctx, state)
 }
 
-func (s *sLazySheepTGGo) upsertBot(ctx context.Context, key string, item *model.BotConfig) error {
+func (s *sLazySheepTGGo) upsertBot(ctx context.Context, key string, item *model.BotConfig, settings *model.Settings) error {
+	s.normalizeBotConfig(key, item)
+
+	allowVerify := true
+	allowLocation := true
+	memberVerify := 0
+	memberPoints := 0
+	signFollow := false
+	if settings != nil {
+		allowVerify = settings.AllowVerify
+		allowLocation = settings.AllowLocation
+		memberVerify = memberVerifyValue(settings.MemberVerify)
+		memberPoints, _ = strconv.Atoi(settings.MemberPoints)
+		signFollow = settings.SignFollow
+	}
+
 	cols := dao.AddonLazysheepTggoBot.Columns()
 	row := g.Map{
 		cols.BotKey:        key,
@@ -147,6 +199,11 @@ func (s *sLazySheepTGGo) upsertBot(ctx context.Context, key string, item *model.
 		cols.AutoPull:      boolToInt(item.AutoPull),
 		cols.AutoForward:   boolToInt(item.AutoForward),
 		cols.ReviewEnabled: boolToInt(item.ReviewEnabled),
+		cols.AllowVerify:   boolToInt(allowVerify),
+		cols.AllowLocation: boolToInt(allowLocation),
+		cols.MemberVerify:  memberVerify,
+		cols.MemberPoints:  memberPoints,
+		cols.SignFollow:    boolToInt(signFollow),
 		cols.Status:        1,
 		cols.UpdatedAt:     gtime.Now(),
 	}
@@ -159,15 +216,44 @@ func (s *sLazySheepTGGo) upsertBot(ctx context.Context, key string, item *model.
 	return err
 }
 
+func (s *sLazySheepTGGo) deleteBot(ctx context.Context, in *lsysin.BotDeleteInp) error {
+	if in == nil || in.Key == "" {
+		return gerror.New("机器人标识不能为空")
+	}
+	cols := dao.AddonLazysheepTggoBot.Columns()
+	bindingCols := dao.AddonLazysheepTggoBinding.Columns()
+	return dao.AddonLazysheepTggoBot.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		count, err := dao.AddonLazysheepTggoBot.Ctx(ctx).Where(cols.BotKey, in.Key).Count()
+		if err != nil {
+			return gerror.Wrap(err, "查询机器人失败")
+		}
+		if count == 0 {
+			return gerror.New("机器人不存在或已删除")
+		}
+		if _, err = dao.AddonLazysheepTggoBinding.Ctx(ctx).Where(bindingCols.BotKey, in.Key).Delete(); err != nil {
+			return gerror.Wrap(err, "删除机器人绑定失败")
+		}
+		if _, err = dao.AddonLazysheepTggoBot.Ctx(ctx).Where(cols.BotKey, in.Key).Delete(); err != nil {
+			return gerror.Wrap(err, "删除机器人失败")
+		}
+		s.runtime.mu.Lock()
+		delete(s.runtime.runtimes, in.Key)
+		s.runtime.mu.Unlock()
+		return nil
+	})
+}
+
 func (s *sLazySheepTGGo) upsertUser(ctx context.Context, key int64, item *model.UserRecord) error {
 	cols := dao.AddonLazysheepTggoUser.Columns()
 	row := g.Map{
 		cols.TelegramId:   key,
+		"bot_key":         item.BotKey,
 		cols.Username:     item.Username,
 		cols.FirstName:    item.FirstName,
 		cols.LastName:     item.LastName,
 		cols.LanguageCode: item.LanguageCode,
 		cols.IsBot:        boolToInt(item.IsBot),
+		cols.LastActiveAt: gtime.Now(),
 		cols.Status:       1,
 		cols.UpdatedAt:    gtime.Now(),
 	}
@@ -176,7 +262,19 @@ func (s *sLazySheepTGGo) upsertUser(ctx context.Context, key int64, item *model.
 	} else {
 		row[cols.CreatedAt] = gtime.Now()
 	}
-	_, err := upsertByKey(ctx, dao.AddonLazysheepTggoUser.Ctx(ctx), cols.TelegramId, key, row)
+	existing, err := dao.AddonLazysheepTggoUser.Ctx(ctx).
+		Fields(cols.Id).
+		Where("bot_key", item.BotKey).
+		Where(cols.TelegramId, key).
+		Value()
+	if err != nil {
+		return gerror.Wrap(err, "查询Telegram用户失败")
+	}
+	if existing.IsNil() {
+		_, err = dao.AddonLazysheepTggoUser.Ctx(ctx).Data(row).Insert()
+		return err
+	}
+	_, err = dao.AddonLazysheepTggoUser.Ctx(ctx).Where(cols.Id, existing.Int64()).Data(row).Update()
 	return err
 }
 
@@ -263,4 +361,50 @@ func statusLabel(v int) string {
 	default:
 		return "unknown"
 	}
+}
+
+func memberVerifyValue(v string) int {
+	switch v {
+	case "member":
+		return 1
+	case "points":
+		return 2
+	default:
+		return 0
+	}
+}
+
+func memberVerifyLabel(v int) string {
+	switch v {
+	case 1:
+		return "member"
+	case 2:
+		return "points"
+	default:
+		return "none"
+	}
+}
+
+func (s *sLazySheepTGGo) fillBotRuntimeStatus(key string, item *model.BotConfig) {
+	if item == nil {
+		return
+	}
+	if !item.Enabled {
+		item.RuntimeStatus = "disabled"
+		item.RuntimeMessage = "未启用"
+		return
+	}
+	rt := s.runtime.get(key)
+	if rt == nil {
+		item.RuntimeStatus = "pending"
+		item.RuntimeMessage = ""
+		return
+	}
+	if rt.status == "error" {
+		item.RuntimeStatus = "error"
+		item.RuntimeMessage = rt.lastError
+		return
+	}
+	item.RuntimeStatus = "running"
+	item.RuntimeMessage = "运行中"
 }

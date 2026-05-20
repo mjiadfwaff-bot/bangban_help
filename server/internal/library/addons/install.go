@@ -74,6 +74,52 @@ func Install(m Module) (err error) {
 	})
 }
 
+// Disable 停用模块
+func Disable(m Module) (err error) {
+	record, err := ScanInstall(m)
+	if err != nil {
+		return
+	}
+
+	if record == nil || record.Status != consts.AddonsInstallStatusOk {
+		return gerror.New("插件未启用，无需重复操作！")
+	}
+
+	data := g.Map{
+		dao.SysAddonsInstall.Columns().Version: m.GetSkeleton().Version,
+		dao.SysAddonsInstall.Columns().Status:  consts.AddonsInstallStatusDisabled,
+	}
+	if _, err = GetModel(m.Ctx()).Where(dao.SysAddonsInstall.Columns().Id, record.Id).Data(data).Update(); err != nil {
+		return
+	}
+	return m.Stop()
+}
+
+// Enable 启用模块
+func Enable(m Module) (err error) {
+	record, err := ScanInstall(m)
+	if err != nil {
+		return
+	}
+
+	if record == nil {
+		return Install(m)
+	}
+
+	if record.Status == consts.AddonsInstallStatusOk {
+		return gerror.New("插件已启用，无需重复操作！")
+	}
+
+	data := g.Map{
+		dao.SysAddonsInstall.Columns().Version: m.GetSkeleton().Version,
+		dao.SysAddonsInstall.Columns().Status:  consts.AddonsInstallStatusOk,
+	}
+	if _, err = GetModel(m.Ctx()).Where(dao.SysAddonsInstall.Columns().Id, record.Id).Data(data).Update(); err != nil {
+		return
+	}
+	return nil
+}
+
 // Upgrade 更新模块
 func Upgrade(m Module) (err error) {
 	record, err := ScanInstall(m)

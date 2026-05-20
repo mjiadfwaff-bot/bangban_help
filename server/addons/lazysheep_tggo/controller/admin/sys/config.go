@@ -25,10 +25,64 @@ func (c *cConfig) GetConfig(ctx context.Context, req *config.GetReq) (res *confi
 }
 
 func (c *cConfig) UpdateConfig(ctx context.Context, req *config.UpdateReq) (res *config.UpdateRes, err error) {
-	err = service.SysLazysheepTggo().SaveState(ctx, req.UpdateConfigInp.ToState())
+	err = service.SysLazysheepTggo().SaveConfig(ctx, &req.UpdateConfigInp)
 	if err != nil {
 		return
 	}
 	res = new(config.UpdateRes)
+	return
+}
+
+func (c *cConfig) InspectBot(ctx context.Context, req *config.InspectBotReq) (res *config.InspectBotRes, err error) {
+	data, err := service.SysLazysheepTggo().InspectBot(ctx, &req.BotInspectInp)
+	if err != nil {
+		return
+	}
+	res = &config.InspectBotRes{BotInspectModel: data}
+	return
+}
+
+func (c *cConfig) DeleteBot(ctx context.Context, req *config.DeleteBotReq) (res *config.DeleteBotRes, err error) {
+	err = service.SysLazysheepTggo().DeleteBot(ctx, &req.BotDeleteInp)
+	if err != nil {
+		return
+	}
+	res = new(config.DeleteBotRes)
+	return
+}
+
+func (c *cConfig) StartBot(ctx context.Context, req *config.StartBotReq) (res *config.StartBotRes, err error) {
+	err = service.SysLazysheepTggo().StartBot(ctx, &req.BotStartInp)
+	if err != nil {
+		return
+	}
+	res = new(config.StartBotRes)
+	return
+}
+
+func (c *cConfig) BotUsers(ctx context.Context, req *config.BotUsersReq) (res *config.BotUsersRes, err error) {
+	list, err := service.SysLazysheepTggo().BotUsers(ctx, &req.BotUserListInp)
+	if err != nil {
+		return
+	}
+	res = &config.BotUsersRes{List: list}
+	return
+}
+
+func (c *cConfig) UpdateBotUser(ctx context.Context, req *config.UpdateBotUserReq) (res *config.UpdateBotUserRes, err error) {
+	err = service.SysLazysheepTggo().UpdateBotUser(ctx, &req.BotUserEditInp)
+	if err != nil {
+		return
+	}
+	res = new(config.UpdateBotUserRes)
+	return
+}
+
+func (c *cConfig) TestTelegramProxy(ctx context.Context, req *config.TestTelegramProxyReq) (res *config.TestTelegramProxyRes, err error) {
+	data, err := service.SysLazysheepTggo().TestTelegramProxy(ctx, &req.TelegramProxyTestInp)
+	if err != nil {
+		return
+	}
+	res = &config.TestTelegramProxyRes{TelegramProxyTestModel: data}
 	return
 }

@@ -59,3 +59,19 @@ func (c *cAddons) UnInstall(ctx context.Context, req *addons.UnInstallReq) (res 
 	}
 	return
 }
+
+// Enable 启用模块
+func (c *cAddons) Enable(ctx context.Context, req *addons.EnableReq) (res *addons.EnableRes, err error) {
+	if err = service.SysAddons().Enable(ctx, &req.AddonsEnableInp); err != nil {
+		return
+	}
+	return
+}
+
+// Disable 停用模块
+func (c *cAddons) Disable(ctx context.Context, req *addons.DisableReq) (res *addons.DisableRes, err error) {
+	if err = service.SysAddons().Disable(ctx, &req.AddonsDisableInp); err != nil {
+		return
+	}
+	return
+}

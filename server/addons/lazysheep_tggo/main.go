@@ -7,6 +7,7 @@ package lazysheep_tggo
 
 import (
 	"context"
+	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/gogf/gf/v2/os/gctx"
 	_ "hotgo/addons/lazysheep_tggo/crons"
@@ -56,6 +57,11 @@ func (m *module) Start(option *addons.Option) (err error) {
 		router.Admin(m.ctx, group)
 		router.Api(m.ctx, group)
 	})
+	go func() {
+		if err := aservice.SysLazysheepTggo().BootBots(m.ctx); err != nil {
+			g.Log().Warningf(m.ctx, "懒羊羊TGGo机器人启动失败：%+v", err)
+		}
+	}()
 	return
 }
 

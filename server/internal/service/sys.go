@@ -31,6 +31,10 @@ type (
 		Upgrade(ctx context.Context, in *sysin.AddonsUpgradeInp) (err error)
 		// UnInstall 卸载模块
 		UnInstall(ctx context.Context, in *sysin.AddonsUnInstallInp) (err error)
+		// Enable 启用模块
+		Enable(ctx context.Context, in *sysin.AddonsEnableInp) (err error)
+		// Disable 停用模块
+		Disable(ctx context.Context, in *sysin.AddonsDisableInp) (err error)
 	}
 	ISysAddonsConfig interface {
 		// GetConfigByGroup 获取指定分组的配置

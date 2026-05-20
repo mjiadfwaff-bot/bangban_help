@@ -679,7 +679,7 @@ CREATE TABLE IF NOT EXISTS hg_sys_addons_config (
     name VARCHAR(100) DEFAULT '',
     type VARCHAR(32) NOT NULL,
     key VARCHAR(100) DEFAULT '',
-    value VARCHAR(500) DEFAULT '',
+    value TEXT DEFAULT '',
     default_value VARCHAR(500) NOT NULL,
     sort INTEGER NOT NULL DEFAULT 0,
     tip VARCHAR(500),

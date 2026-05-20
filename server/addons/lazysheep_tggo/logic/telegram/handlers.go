@@ -18,6 +18,7 @@ import (
 
 func init() {
 	RegisterMessageHandler(&startCommand{})
+	RegisterMessageHandler(&menuButtonMessage{})
 	RegisterMessageHandler(&bindCommand{})
 	RegisterMessageHandler(&pullCommand{})
 	RegisterMessageHandler(&signCommand{})
@@ -30,40 +31,49 @@ func init() {
 type startCommand struct{}
 
 func (h *startCommand) Key() string              { return "start" }
-func (h *startCommand) Pattern() string          { return "/start" }
+func (h *startCommand) Pattern() string          { return "start" }
 func (h *startCommand) MatchType() bot.MatchType { return bot.MatchTypeCommandStartOnly }
 func (h *startCommand) Description() string      { return "记录用户身份并欢迎关注" }
 func (h *startCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
-	if update == nil || update.Message == nil || update.Message.From == nil {
+	return Dispatch(ctx, b, &PluginRequest{
+		Trigger: TriggerStart,
+		BotKey:  currentBotKey(ctx),
+		Update:  update,
+	})
+}
+
+type menuButtonMessage struct{}
+
+func (h *menuButtonMessage) Key() string              { return "menu_button" }
+func (h *menuButtonMessage) Pattern() string          { return "" }
+func (h *menuButtonMessage) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *menuButtonMessage) Description() string      { return "底部菜单按钮调度" }
+func (h *menuButtonMessage) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	if update == nil || update.Message == nil || update.Message.Text == "" {
 		return nil
 	}
-	_ = service.SysLazysheepTggo().TouchUser(ctx, &sysin.TouchUserInp{
-		TelegramID:   update.Message.From.ID,
-		Username:     update.Message.From.Username,
-		FirstName:    update.Message.From.FirstName,
-		LastName:     update.Message.From.LastName,
-		LanguageCode: update.Message.From.LanguageCode,
-		IsBot:        update.Message.From.IsBot,
+	return Dispatch(ctx, b, &PluginRequest{
+		Trigger: TriggerMenuButton,
+		BotKey:  currentBotKey(ctx),
+		Text:    strings.TrimSpace(update.Message.Text),
+		Update:  update,
 	})
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   "欢迎使用懒羊羊TGGo。请通过后台录入 bot 配置后再执行绑定。",
-	})
-	return err
 }
 
 type bindCommand struct{}
 
 func (h *bindCommand) Key() string              { return "bind" }
-func (h *bindCommand) Pattern() string          { return "/绑定" }
+func (h *bindCommand) Pattern() string          { return "绑定" }
 func (h *bindCommand) MatchType() bot.MatchType { return bot.MatchTypePrefix }
 func (h *bindCommand) Description() string      { return "绑定资源链接" }
 func (h *bindCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
 	if update == nil || update.Message == nil || update.Message.From == nil {
 		return nil
 	}
+	botKey := currentBotKey(ctx)
 	_ = service.SysLazysheepTggo().TouchUser(ctx, &sysin.TouchUserInp{
 		TelegramID:   update.Message.From.ID,
+		BotKey:       botKey,
 		Username:     update.Message.From.Username,
 		FirstName:    update.Message.From.FirstName,
 		LastName:     update.Message.From.LastName,
@@ -78,9 +88,30 @@ func (h *bindCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 		})
 		return err
 	}
+	if botKey == "" {
+		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   "当前命令上下文缺少 bot 标识，请先检查 webhook 入口。",
+		})
+		return err
+	}
+	if err := service.SysLazysheepTggo().BindSource(ctx, &sysin.BindSourceInp{
+		BotKey:    botKey,
+		SourceURL: args,
+		AutoPush:  true,
+	}); err != nil {
+		_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   fmt.Sprintf("绑定失败：%v", err),
+		})
+		if sendErr != nil {
+			return sendErr
+		}
+		return err
+	}
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
-		Text:   fmt.Sprintf("已收到绑定请求：%s", args),
+		Text:   fmt.Sprintf("绑定已保存：%s", args),
 	})
 	return err
 }
@@ -88,21 +119,33 @@ func (h *bindCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 type pullCommand struct{}
 
 func (h *pullCommand) Key() string              { return "pull" }
-func (h *pullCommand) Pattern() string          { return "/拉取" }
+func (h *pullCommand) Pattern() string          { return "拉取" }
 func (h *pullCommand) MatchType() bot.MatchType { return bot.MatchTypePrefix }
 func (h *pullCommand) Description() string      { return "主动触发采集" }
 func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   "已触发采集任务，后续会接入队列执行。",
+	if update == nil || update.Message == nil {
+		return nil
+	}
+	botKey := currentBotKey(ctx)
+	args := strings.TrimSpace(strings.TrimPrefix(update.Message.Text, "/拉取"))
+	msg, err := service.SysLazysheepTggo().PullNow(ctx, &sysin.PullInp{
+		BotKey:    botKey,
+		SourceURL: args,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: update.Message.Chat.ID,
+		Text:   msg,
+	})
+	return sendErr
 }
 
 type signCommand struct{}
 
 func (h *signCommand) Key() string              { return "sign" }
-func (h *signCommand) Pattern() string          { return "/签到" }
+func (h *signCommand) Pattern() string          { return "签到" }
 func (h *signCommand) MatchType() bot.MatchType { return bot.MatchTypePrefix }
 func (h *signCommand) Description() string      { return "签到入口" }
 func (h *signCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
@@ -153,4 +196,8 @@ func replyCallback(ctx context.Context, b *bot.Bot, update *models.Update, text 
 		ShowAlert:       false,
 	})
 	return err
+}
+
+func currentBotKey(ctx context.Context) string {
+	return strings.TrimSpace(CurrentBotKey(ctx))
 }

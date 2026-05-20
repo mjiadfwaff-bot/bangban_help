@@ -17,8 +17,10 @@ var Webhook = cWebhook{}
 type cWebhook struct{}
 
 func (c *cWebhook) Update(ctx context.Context, req *webhook.UpdateReq) (res *webhook.UpdateRes, err error) {
-	body := g.RequestFromCtx(ctx).GetBody()
-	err = service.SysLazysheepTggo().HandleWebhook(ctx, req.BotKey, body)
+	request := g.RequestFromCtx(ctx)
+	body := request.GetBody()
+	secretToken := request.GetHeader("X-Telegram-Bot-Api-Secret-Token")
+	err = service.SysLazysheepTggo().HandleWebhook(ctx, req.BotKey, body, secretToken)
 	if err != nil {
 		return
 	}

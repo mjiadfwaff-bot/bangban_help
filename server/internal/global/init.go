@@ -21,6 +21,7 @@ import (
 	"github.com/gogf/gf/v2/util/gmode"
 	"hotgo/internal/consts"
 	"hotgo/internal/library/cache"
+	"hotgo/internal/library/dbinit"
 	"hotgo/internal/library/queue"
 	"hotgo/internal/model/entity"
 	"hotgo/internal/service"
@@ -52,6 +53,9 @@ func Init(ctx context.Context) {
 	// 设置缓存适配器
 	cache.SetAdapter(ctx)
 
+	// 开发/测试环境下首次启动自动导入基础表，生产环境仍需人工迁移
+	AutoInitDevelopDatabase(ctx)
+
 	// 初始化功能库配置
 	service.SysConfig().InitConfig(ctx)
 
@@ -60,6 +64,58 @@ func Init(ctx context.Context) {
 
 	// 订阅集群同步
 	SubscribeClusterSync(ctx)
+}
+
+func AutoInitDevelopDatabase(ctx context.Context) {
+	if !gmode.IsDevelop() && !gmode.IsTesting() {
+		return
+	}
+	ok, err := dbinit.HasTable(ctx, "hg_sys_config")
+	if err != nil {
+		g.Log().Fatalf(ctx, "检查数据库初始化状态失败：%+v", err)
+		return
+	}
+	if !ok {
+		sqlPath := "storage/data/hotgo.sql"
+		if !gfile.Exists(sqlPath) {
+			g.Log().Fatalf(ctx, "开发环境首次启动需要初始化数据库，但 SQL 文件不存在：%s", sqlPath)
+			return
+		}
+		g.Log().Warningf(ctx, "检测到开发数据库未初始化，开始导入基础 SQL：%s", sqlPath)
+		if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
+			g.Log().Fatalf(ctx, "自动初始化开发数据库失败：%+v", err)
+			return
+		}
+	}
+	corePath, seedPath, addonPath, err := developInitSQLPaths()
+	if err != nil {
+		g.Log().Fatalf(ctx, "开发数据库初始化暂不支持当前数据库：%+v", err)
+		return
+	}
+	if err = dbinit.ImportFile(ctx, corePath); err != nil {
+		g.Log().Fatalf(ctx, "自动初始化开发数据库核心数据失败：%+v", err)
+		return
+	}
+	if err = dbinit.ImportFile(ctx, seedPath); err != nil {
+		g.Log().Fatalf(ctx, "自动初始化开发数据库种子失败：%+v", err)
+		return
+	}
+	if err = dbinit.ImportFile(ctx, addonPath); err != nil {
+		g.Log().Fatalf(ctx, "自动初始化懒羊羊TGGo数据表失败：%+v", err)
+		return
+	}
+	g.Log().Info(ctx, "开发数据库初始化完成")
+}
+
+func developInitSQLPaths() (corePath string, seedPath string, addonPath string, err error) {
+	switch g.DB().GetConfig().Type {
+	case consts.DBMysql:
+		return "storage/data/generate/hotgo_core_seed_mysql.sql", "storage/data/generate/hotgo_min_seed_mysql.sql", "storage/data/generate/addons/lazysheep_tggo_mysql.sql", nil
+	case consts.DBPgsql:
+		return "storage/data/generate/hotgo_core_seed_pgsql.sql", "storage/data/generate/hotgo_min_seed_pgsql.sql", "storage/data/generate/addons/lazysheep_tggo_pgsql.sql", nil
+	default:
+		return "", "", "", fmt.Errorf("database type %s", g.DB().GetConfig().Type)
+	}
 }
 
 // LoggingServeLogHandler 服务日志处理

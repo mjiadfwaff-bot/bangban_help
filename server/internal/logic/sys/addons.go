@@ -125,3 +125,13 @@ func (s *sSysAddons) Upgrade(ctx context.Context, in *sysin.AddonsUpgradeInp) (e
 func (s *sSysAddons) UnInstall(ctx context.Context, in *sysin.AddonsUnInstallInp) (err error) {
 	return addons.UnInstall(in.GetModule())
 }
+
+// Enable 启用模块
+func (s *sSysAddons) Enable(ctx context.Context, in *sysin.AddonsEnableInp) (err error) {
+	return addons.Enable(in.GetModule())
+}
+
+// Disable 停用模块
+func (s *sSysAddons) Disable(ctx context.Context, in *sysin.AddonsDisableInp) (err error) {
+	return addons.Disable(in.GetModule())
+}

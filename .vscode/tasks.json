@@ -2,13 +2,29 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "web:dev",
+      "label": "server:hot",
+      "type": "shell",
+      "command": "make",
+      "args": ["all"],
+      "options": {
+        "cwd": "${workspaceFolder}/server"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "web:hot",
       "type": "shell",
       "command": "pnpm",
       "args": ["dev"],
       "options": {
         "cwd": "${workspaceFolder}/web"
       },
+      "problemMatcher": []
+    },
+    {
+      "label": "full:hot",
+      "dependsOrder": "parallel",
+      "dependsOn": ["server:hot", "web:hot"],
       "problemMatcher": []
     }
   ]

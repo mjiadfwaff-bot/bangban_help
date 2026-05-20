@@ -1,0 +1,12 @@
+{
+  "go.toolsManagement.autoUpdate": true,
+  "files.watcherExclude": {
+    "**/web/dist/**": true,
+    "**/server/resource/public/admin/**": true
+  },
+  "search.exclude": {
+    "**/web/dist": true,
+    "**/server/resource/public/admin": true
+  },
+  "terminal.integrated.defaultProfile.osx": "zsh"
+}
