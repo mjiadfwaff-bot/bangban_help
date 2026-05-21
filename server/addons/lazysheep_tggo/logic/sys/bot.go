@@ -202,8 +202,10 @@ func (s *sLazySheepTGGo) HandleWebhook(ctx context.Context, botKey string, paylo
 	}
 	var update models.Update
 	if err := json.Unmarshal(payload, &update); err != nil {
+		s.saveWebhookLog(ctx, botKey, payload, nil)
 		return err
 	}
+	s.saveWebhookLog(ctx, botKey, payload, &update)
 	rt.client.ProcessUpdate(telegram.WithBotKey(ctx, botKey), &update)
 	return nil
 }

@@ -26,6 +26,9 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err := s.ensureNoteTables(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureWebhookLogTable(ctx); err != nil {
+		return err
+	}
 	ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_bot")
 	if err != nil {
 		return gerror.Wrap(err, "检查懒羊羊TGGo数据表失败")
@@ -91,6 +94,52 @@ func (s *sLazySheepTGGo) ensureNoteTables(ctx context.Context) error {
 		return gerror.Wrap(err, "初始化笔记资源表失败")
 	}
 	return nil
+}
+
+func (s *sLazySheepTGGo) ensureWebhookLogTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_webhook_log"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_webhook_log (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				update_id BIGINT NOT NULL DEFAULT 0,
+				update_type VARCHAR(32) NOT NULL DEFAULT '',
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				user_id BIGINT NOT NULL DEFAULT 0,
+				username VARCHAR(128) NOT NULL DEFAULT '',
+				message_id BIGINT NOT NULL DEFAULT 0,
+				summary VARCHAR(512) NOT NULL DEFAULT '',
+				payload TEXT,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL
+			)
+		`)
+		return err
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_webhook_log` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`update_id` BIGINT NOT NULL DEFAULT 0 COMMENT 'Telegram update id',"+
+			"`update_type` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '更新类型',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '聊天ID',"+
+			"`user_id` BIGINT NOT NULL DEFAULT 0 COMMENT '用户ID',"+
+			"`username` VARCHAR(128) NOT NULL DEFAULT '' COMMENT '用户名',"+
+			"`message_id` BIGINT NOT NULL DEFAULT 0 COMMENT '消息ID',"+
+			"`summary` VARCHAR(512) NOT NULL DEFAULT '' COMMENT '摘要',"+
+			"`payload` LONGTEXT COMMENT '原始内容',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"KEY `bot_update_id` (`bot_key`,`update_id`),"+
+			"KEY `bot_chat_id` (`bot_key`,`chat_id`),"+
+			"KEY `created_at` (`created_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG webhook原始日志'")
+		return err
+	default:
+		return nil
+	}
 }
 
 func (s *sLazySheepTGGo) ensureUserBotKey(ctx context.Context) error {
