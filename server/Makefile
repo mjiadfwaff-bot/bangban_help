@@ -11,7 +11,7 @@ build:
 	@mkdir ./$(ADMIN_RESOURCE_PATH)
 	@cd ../web && pnpm run build && \cp -rf ./dist/*  ../server$(ADMIN_RESOURCE_PATH)
 	@cd ../server
-	@echo "y" | gf build
+	@echo "y" | gf build main.go -a amd64 -s linux -p ./temp -n hotgo
 
 # 通过热编译启动所有服务
 .PHONY: all
