@@ -49,6 +49,7 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 		settings = cfg.Settings
 	}
 	caption := buildNoteCaption(note, rt.cfg, binding, settings)
+	g.Log().Debugf(ctx, "推送采集笔记开始 botKey:%s binding:%s noteId:%d targetChat:%d reviewMode:%t", botKey, binding.Key, noteID, targetChatID, reviewMode)
 	params := &bot.SendMessageParams{
 		ChatID:    targetChatID,
 		Text:      caption,
@@ -61,6 +62,7 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	if err != nil {
 		return err
 	}
+	g.Log().Debugf(ctx, "推送采集笔记完成 botKey:%s binding:%s noteId:%d messageID:%d", botKey, binding.Key, noteID, msg.ID)
 	cols := dao.AddonLazysheepTggoNote.Columns()
 	update := g.Map{cols.UpdatedAt: gtime.Now()}
 	if reviewMode {

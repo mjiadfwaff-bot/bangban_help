@@ -104,6 +104,8 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 			SourceToken:     row.SourceToken,
 			ReviewChatID:    int64(row.ReviewChatId),
 			PublishChatID:   int64(row.PublishChatId),
+			LastPullID:      row.LastPullId,
+			LastCursor:      row.LastCursor,
 			Status:          statusLabel(row.Status),
 			AutoPush:        row.AutoPush > 0,
 			VerifyEnabled:   row.VerifyEnabled > 0,
@@ -319,7 +321,8 @@ func (s *sLazySheepTGGo) upsertBinding(ctx context.Context, key string, item *mo
 		cols.PublishEnabled:  1,
 		cols.VerifyEnabled:   boolToInt(item.VerifyEnabled),
 		cols.LocationEnabled: boolToInt(item.LocationEnabled),
-		cols.LastCursor:      "",
+		cols.LastPullId:      item.LastPullID,
+		cols.LastCursor:      item.LastCursor,
 		cols.Status:          1,
 		cols.UpdatedAt:       gtime.Now(),
 	}

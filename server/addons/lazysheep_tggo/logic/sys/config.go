@@ -13,7 +13,9 @@ import (
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 	"hotgo/addons/lazysheep_tggo/logic/bangchat"
+	"hotgo/addons/lazysheep_tggo/logic/shared"
 	"hotgo/addons/lazysheep_tggo/model"
 	lsysin "hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/addons/lazysheep_tggo/service"
@@ -195,7 +197,7 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	if in == nil || in.BotKey == "" {
 		return "", gerror.New("botKey 不能为空")
 	}
-	binding, err := s.findBinding(ctx, in.BotKey, in.SourceURL)
+	binding, err := s.findBinding(ctx, in.BotKey, in.SourceURL, in.ChatID)
 	if err != nil {
 		return "", err
 	}
@@ -223,20 +225,59 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	if err = s.configureBangchatProxy(ctx); err != nil {
 		return "", err
 	}
+	g.Log().Debugf(ctx, "开始 BangChat 采集 botKey:%s binding:%s source:%s limit:%d autoPush:%t", in.BotKey, binding.Key, binding.SourceURL, limit, binding.AutoPush)
 	result, err := bangchat.Pull(ctx, bangchat.PullOption{URL: binding.SourceURL, Limit: limit, MaxPages: 0})
 	if err != nil {
 		return "", gerror.Wrap(err, "采集 BangChat 消息失败")
 	}
 	summary := &pullSummary{Fetched: len(result.Messages), PairID: result.PairID}
+	g.Log().Debugf(ctx, "BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d", in.BotKey, binding.Key, result.PairID, len(result.Messages))
+	shared.ReportPullProgress(ctx, fmt.Sprintf("已拉取 %d 条，开始处理...", len(result.Messages)))
+	maxContentID, latestCursor := pullCursorFromMessages(result.Messages)
+	batchSeen := make(map[string]struct{}, len(result.Messages))
 	if binding.AutoPush {
 		rt := s.runtime.get(in.BotKey)
 		if rt == nil || rt.client == nil {
 			return "", gerror.New("机器人运行实例不存在，请先启动机器人")
 		}
-		for _, raw := range result.Messages {
+		for idx, raw := range result.Messages {
+			shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", idx+1, len(result.Messages)))
 			if !isBangchatNote(raw) {
 				summary.Skipped++
 				continue
+			}
+			var msg sourceMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				summary.Failed++
+				g.Log().Warningf(ctx, "解析快速采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				continue
+			}
+			g.Log().Debugf(ctx, "快速采集处理笔记 botKey:%s binding:%s index:%d contentID:%s", in.BotKey, binding.Key, idx+1, msg.ContentId)
+			contentID := parseInt(msg.ContentId)
+			if binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
+				summary.Skipped++
+				continue
+			}
+			var note noteContent
+			if err := json.Unmarshal([]byte(msg.Content), &note); err != nil {
+				summary.Failed++
+				g.Log().Warningf(ctx, "解析快速采集笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				continue
+			}
+			fingerprint, sourceURLs := noteFingerprint(note)
+			if fingerprint != "" {
+				if _, ok := batchSeen[fingerprint]; ok {
+					summary.Deduped++
+					continue
+				}
+				seen, seenErr := pullDedupSeen(ctx, in.BotKey, fingerprint)
+				if seenErr != nil {
+					return "", seenErr
+				}
+				if seen {
+					summary.Deduped++
+					continue
+				}
 			}
 			if pushErr := s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID); pushErr != nil {
 				summary.Failed++
@@ -244,13 +285,58 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 				continue
 			}
 			summary.QuickPushed++
+			if fingerprint != "" {
+				batchSeen[fingerprint] = struct{}{}
+				if err := pullDedupRemember(ctx, in.BotKey, fingerprint, 0, sourceURLs); err != nil {
+					g.Log().Warningf(ctx, "记录快速采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				}
+			}
+		}
+		if maxContentID > binding.LastPullID {
+			if err := s.updateBindingPullState(ctx, binding.Key, maxContentID, latestCursor); err != nil {
+				g.Log().Warningf(ctx, "更新快速采集游标失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+			}
 		}
 		return summary.Message(), nil
 	}
-	for _, raw := range result.Messages {
+	for idx, raw := range result.Messages {
+		shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", idx+1, len(result.Messages)))
 		if !isBangchatNote(raw) {
 			summary.Skipped++
 			continue
+		}
+		var msg sourceMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			summary.Failed++
+			g.Log().Warningf(ctx, "解析采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+			continue
+		}
+		g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s index:%d contentID:%s", in.BotKey, binding.Key, idx+1, msg.ContentId)
+		contentID := parseInt(msg.ContentId)
+		if binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
+			summary.Skipped++
+			continue
+		}
+		var note noteContent
+		if err := json.Unmarshal([]byte(msg.Content), &note); err != nil {
+			summary.Failed++
+			g.Log().Warningf(ctx, "解析采集笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+			continue
+		}
+		fingerprint, sourceURLs := noteFingerprint(note)
+		if fingerprint != "" {
+			if _, ok := batchSeen[fingerprint]; ok {
+				summary.Deduped++
+				continue
+			}
+			seen, seenErr := pullDedupSeen(ctx, in.BotKey, fingerprint)
+			if seenErr != nil {
+				return "", seenErr
+			}
+			if seen {
+				summary.Deduped++
+				continue
+			}
 		}
 		stored, storeErr := s.StoreNote(ctx, &lsysin.NoteStoreInp{
 			BotKey:     in.BotKey,
@@ -263,11 +349,22 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 			continue
 		}
 		summary.Stored++
+		if fingerprint != "" {
+			batchSeen[fingerprint] = struct{}{}
+			if err := pullDedupRemember(ctx, in.BotKey, fingerprint, stored.NoteId, sourceURLs); err != nil {
+				g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+			}
+		}
 		if pushErr := s.pushCollectedNote(ctx, in.BotKey, binding, stored.NoteId, in.ChatID); pushErr != nil {
 			summary.PushFailed++
 			g.Log().Warningf(ctx, "推送采集笔记失败 botKey:%s noteId:%d err:%+v", in.BotKey, stored.NoteId, pushErr)
 		} else {
 			summary.Pushed++
+		}
+	}
+	if maxContentID > binding.LastPullID {
+		if err := s.updateBindingPullState(ctx, binding.Key, maxContentID, latestCursor); err != nil {
+			g.Log().Warningf(ctx, "更新采集游标失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 		}
 	}
 	return summary.Message(), nil
@@ -279,6 +376,7 @@ type pullSummary struct {
 	Stored      int
 	Pushed      int
 	QuickPushed int
+	Deduped     int
 	Skipped     int
 	Failed      int
 	PushFailed  int
@@ -286,9 +384,9 @@ type pullSummary struct {
 
 func (s *pullSummary) Message() string {
 	if s.QuickPushed > 0 {
-		return fmt.Sprintf("采集完成：获取 %d 条，快速推送 %d 条，跳过 %d 条，失败 %d 条。", s.Fetched, s.QuickPushed, s.Skipped, s.Failed)
+		return fmt.Sprintf("采集完成：获取 %d 条，快速推送 %d 条，去重 %d 条，跳过 %d 条，失败 %d 条。", s.Fetched, s.QuickPushed, s.Deduped, s.Skipped, s.Failed)
 	}
-	return fmt.Sprintf("采集完成：获取 %d 条，入库 %d 条，推送 %d 条，跳过 %d 条，失败 %d 条，推送失败 %d 条。", s.Fetched, s.Stored, s.Pushed, s.Skipped, s.Failed, s.PushFailed)
+	return fmt.Sprintf("采集完成：获取 %d 条，入库 %d 条，推送 %d 条，去重 %d 条，跳过 %d 条，失败 %d 条，推送失败 %d 条。", s.Fetched, s.Stored, s.Pushed, s.Deduped, s.Skipped, s.Failed, s.PushFailed)
 }
 
 func (s *sLazySheepTGGo) SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error) {
@@ -341,7 +439,7 @@ func (s *sLazySheepTGGo) SignIn(ctx context.Context, in *lsysin.SignInInp) (mess
 	return "签到功能框架已接入，后续补充关注校验和验证码。", nil
 }
 
-func (s *sLazySheepTGGo) findBinding(ctx context.Context, botKey, sourceURL string) (*model.BindingRecord, error) {
+func (s *sLazySheepTGGo) findBinding(ctx context.Context, botKey, sourceURL string, chatID int64) (*model.BindingRecord, error) {
 	state, err := s.GetState(ctx)
 	if err != nil {
 		return nil, err
@@ -353,27 +451,31 @@ func (s *sLazySheepTGGo) findBinding(ctx context.Context, botKey, sourceURL stri
 		if v.BotKey != botKey {
 			continue
 		}
-		if sourceURL != "" && v.SourceURL != sourceURL {
-			continue
+		if chatID != 0 && (v.ReviewChatID == chatID || v.PublishChatID == chatID) {
+			if sourceURL != "" && v.SourceURL != sourceURL {
+				return nil, gerror.New("当前频道绑定的链接与命令参数不一致，请检查后重试")
+			}
+			return v, nil
 		}
-		return v, nil
+	}
+	return nil, nil
+}
+
+func (s *sLazySheepTGGo) updateBindingPullState(ctx context.Context, bindingKey string, lastPullID int64, lastCursor string) error {
+	if strings.TrimSpace(bindingKey) == "" {
+		return nil
 	}
 	cols := dao.AddonLazysheepTggoBinding.Columns()
-	var row struct {
-		SourceUrl string `json:"sourceUrl"`
+	_, err := dao.AddonLazysheepTggoBinding.Ctx(ctx).
+		Where(cols.BindingKey, bindingKey).
+		Data(g.Map{
+			cols.LastPullId: lastPullID,
+			cols.LastCursor: strings.TrimSpace(lastCursor),
+			cols.UpdatedAt:  gtime.Now(),
+		}).
+		Update()
+	if err != nil {
+		return gerror.Wrap(err, "更新采集游标失败")
 	}
-	mod := dao.AddonLazysheepTggoBinding.Ctx(ctx).Fields(cols.SourceUrl).Where(cols.BotKey, botKey)
-	if sourceURL != "" {
-		mod = mod.Where(cols.SourceUrl, sourceURL)
-	}
-	if err = mod.Scan(&row); err != nil {
-		return nil, err
-	}
-	if row.SourceUrl == "" {
-		return nil, nil
-	}
-	return &model.BindingRecord{
-		BotKey:    botKey,
-		SourceURL: row.SourceUrl,
-	}, nil
+	return nil
 }

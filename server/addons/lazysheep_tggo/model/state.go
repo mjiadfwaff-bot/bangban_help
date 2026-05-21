@@ -58,6 +58,8 @@ type BindingRecord struct {
 	SourceToken     string      `json:"sourceToken"`
 	ReviewChatID    int64       `json:"reviewChatId"`
 	PublishChatID   int64       `json:"publishChatId"`
+	LastPullID      int64       `json:"lastPullId"`
+	LastCursor      string      `json:"lastCursor"`
 	Status          string      `json:"status"`
 	AutoPush        bool        `json:"autoPush"`
 	VerifyEnabled   bool        `json:"verifyEnabled"`

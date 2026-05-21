@@ -15,6 +15,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/gogf/gf/v2/frame/g"
+	"hotgo/addons/lazysheep_tggo/logic/shared"
 	"hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/addons/lazysheep_tggo/service"
 )
@@ -207,12 +208,25 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 			}
 		}
 	}
+	modeText := resolvePullModeText(ctx, botKey, sourceURL, msg.Chat.ID)
 	progress, sendProgressErr := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: msg.Chat.ID,
-		Text:   pullProgressText(limit),
+		Text:   pullProgressText(modeText, limit),
 	})
 
 	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 15*time.Minute)
+	lastProgressText := ""
+	taskCtx = shared.WithPullProgressReporter(taskCtx, func(text string) {
+		if sendProgressErr != nil || progress == nil || strings.TrimSpace(text) == "" || text == lastProgressText {
+			return
+		}
+		lastProgressText = text
+		_, _ = b.EditMessageText(taskCtx, &bot.EditMessageTextParams{
+			ChatID:    msg.Chat.ID,
+			MessageID: progress.ID,
+			Text:      text,
+		})
+	})
 	go func() {
 		defer cancel()
 		result, err := service.SysLazysheepTggo().PullNow(taskCtx, &sysin.PullInp{
@@ -223,35 +237,77 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 		})
 		if err != nil {
 			g.Log().Warningf(taskCtx, "Telegram pull task failed bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, err)
-			editOrSendPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, fmt.Sprintf("采集失败：%v", err))
+			deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, fmt.Sprintf("采集失败：%v", err))
 			return
 		}
-		editOrSendPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, result)
+		deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, result)
 	}()
 	return nil
 }
 
-func editOrSendPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *models.Message, progressErr error, text string) {
+func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *models.Message, progressErr error, text string) {
+	sentResult := false
+	if strings.TrimSpace(text) != "" {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: chatID,
+			Text:   text,
+		}); err == nil {
+			sentResult = true
+		}
+	}
 	if progressErr == nil && progress != nil {
-		if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+		if _, err := b.DeleteMessage(ctx, &bot.DeleteMessageParams{
 			ChatID:    chatID,
 			MessageID: progress.ID,
-			Text:      text,
 		}); err == nil {
 			return
 		}
 	}
-	_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: chatID,
-		Text:   text,
-	})
+	if !sentResult && progressErr == nil && progress != nil {
+		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    chatID,
+			MessageID: progress.ID,
+			Text:      text,
+		})
+	}
 }
 
-func pullProgressText(limit int) string {
-	if limit > 0 {
-		return fmt.Sprintf("已启动采集，本次最多拉取 %d 条，请稍等。", limit)
+func pullProgressText(modeText string, limit int) string {
+	if strings.TrimSpace(modeText) == "" {
+		modeText = "采集"
 	}
-	return "已启动采集，请稍等。"
+	if limit > 0 {
+		return fmt.Sprintf("已启动%s，本次最多拉取 %d 条，请稍等。", modeText, limit)
+	}
+	return fmt.Sprintf("已启动%s，请稍等。", modeText)
+}
+
+func resolvePullModeText(ctx context.Context, botKey, sourceURL string, chatID int64) string {
+	state, err := service.SysLazysheepTggo().GetState(ctx)
+	if err != nil || state == nil {
+		return "采集"
+	}
+	for _, item := range state.Bindings {
+		if item == nil {
+			continue
+		}
+		if item.BotKey != botKey {
+			continue
+		}
+		if chatID != 0 && (item.ReviewChatID == chatID || item.PublishChatID == chatID) {
+			if sourceURL != "" && item.SourceURL != sourceURL {
+				return "采集"
+			}
+			if item.AutoPush {
+				return "快速模式"
+			}
+			if item.ReviewChatID != 0 {
+				return "审核模式"
+			}
+			return "采集"
+		}
+	}
+	return "采集"
 }
 
 type signCommand struct{}

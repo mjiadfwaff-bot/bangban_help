@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -30,9 +31,10 @@ import (
 )
 
 const (
-	quickMediaGroupLimit = 10
-	quickMediaMaxBytes   = 48 << 20
-	bangchatMediaSecret  = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
+	quickMediaGroupLimit          = 10
+	quickMediaMaxBytes            = 48 << 20
+	quickMediaDownloadConcurrency = 5
+	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
 )
 
 var quickMediaHTTPClient = &http.Client{
@@ -79,6 +81,7 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 	}
 
 	title, text := noteText(note.Items)
+	g.Log().Debugf(ctx, "快速推送开始 botKey:%s binding:%s targetChat:%d title:%s", botKey, binding.Key, targetChatID, title)
 	plugins := s.collectorPlugins(ctx, botKey)
 	settings := map[string]any{}
 	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
@@ -87,6 +90,7 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 	locations := collectQuickLocations(note.Items)
 	caption := buildQuickCaption(title, text, settings, locations)
 	mediaAssets := buildQuickMediaAssets(ctx, note.Items)
+	g.Log().Debugf(ctx, "快速推送媒体准备完成 botKey:%s binding:%s assets:%d", botKey, binding.Key, len(mediaAssets))
 	if len(mediaAssets) == 0 {
 		return s.sendQuickText(ctx, rt.client, targetChatID, caption)
 	}
@@ -109,10 +113,12 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 		if err != nil {
 			return err
 		}
+		g.Log().Debugf(ctx, "快速推送媒体分片完成 botKey:%s binding:%s chunk:%d messages:%d", botKey, binding.Key, i+1, len(msgs))
 		if firstMsgID == 0 && len(msgs) > 0 {
 			firstMsgID = msgs[0].ID
 		}
 	}
+	g.Log().Debugf(ctx, "快速推送完成 botKey:%s binding:%s targetChat:%d", botKey, binding.Key, targetChatID)
 	return nil
 }
 
@@ -147,40 +153,79 @@ func buildQuickCaption(title, text string, settings map[string]any, locations []
 }
 
 type quickMediaAsset struct {
-	Type     string
-	Filename string
-	Data     []byte
-	Duration int
+	Type         string
+	Filename     string
+	Data         []byte
+	SourceURL    string
+	ThumbnailURL string
+	Duration     int
+	AspectRatio  float64
 }
 
 func buildQuickMediaAssets(ctx context.Context, items []noteItem) []quickMediaAsset {
-	out := make([]quickMediaAsset, 0, len(items))
+	results := make([]*quickMediaAsset, len(items))
+	thumbURL := ""
+	for _, item := range items {
+		if item.Type == noteTypeImage && thumbURL == "" {
+			thumbURL = strings.TrimSpace(item.Content)
+		}
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, quickMediaDownloadConcurrency)
 	for index, item := range items {
 		switch item.Type {
 		case noteTypeImage:
-			filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, index)
-			if err != nil {
-				g.Log().Warningf(ctx, "下载快速推送图片失败 url:%s err:%+v", item.Content, err)
-				continue
-			}
-			out = append(out, quickMediaAsset{
-				Type:     noteTypeImage,
-				Filename: filename,
-				Data:     data,
-			})
+			wg.Add(1)
+			go func(idx int, item noteItem) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				g.Log().Debugf(ctx, "下载快速推送图片开始 index:%d url:%s", idx, item.Content)
+				filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, idx)
+				if err != nil {
+					g.Log().Warningf(ctx, "下载快速推送图片失败 url:%s err:%+v", item.Content, err)
+					return
+				}
+				g.Log().Debugf(ctx, "下载快速推送图片完成 index:%d bytes:%d", idx, len(data))
+				results[idx] = &quickMediaAsset{
+					Type:      noteTypeImage,
+					Filename:  filename,
+					Data:      data,
+					SourceURL: strings.TrimSpace(item.Content),
+				}
+			}(index, item)
 		case noteTypeVideo:
-			filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, index)
-			if err != nil {
-				g.Log().Warningf(ctx, "下载快速推送视频失败 url:%s err:%+v", item.Content, err)
-				continue
-			}
-			out = append(out, quickMediaAsset{
-				Type:     noteTypeVideo,
-				Filename: filename,
-				Data:     data,
-				Duration: item.Duration,
-			})
+			wg.Add(1)
+			go func(idx int, item noteItem) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				g.Log().Debugf(ctx, "下载快速推送视频开始 index:%d url:%s", idx, item.Content)
+				filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, idx)
+				if err != nil {
+					g.Log().Warningf(ctx, "下载快速推送视频失败 url:%s err:%+v", item.Content, err)
+					return
+				}
+				g.Log().Debugf(ctx, "下载快速推送视频完成 index:%d bytes:%d", idx, len(data))
+				results[idx] = &quickMediaAsset{
+					Type:         noteTypeVideo,
+					Filename:     filename,
+					Data:         data,
+					SourceURL:    strings.TrimSpace(item.Content),
+					ThumbnailURL: thumbURL,
+					Duration:     item.Duration,
+					AspectRatio:  item.AspectRatio,
+				}
+			}(index, item)
 		}
+	}
+	wg.Wait()
+	out := make([]quickMediaAsset, 0, len(items))
+	for _, asset := range results {
+		if asset == nil {
+			continue
+		}
+		out = append(out, *asset)
 	}
 	return out
 }
@@ -266,15 +311,34 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 				MediaAttachment: bytes.NewReader(asset.Data),
 			})
 		case noteTypeVideo:
-			out = append(out, &models.InputMediaVideo{
+			width, height := videoDimensions(asset.AspectRatio)
+			video := &models.InputMediaVideo{
 				Media:             "attach://" + asset.Filename,
 				MediaAttachment:   bytes.NewReader(asset.Data),
 				SupportsStreaming: true,
 				Duration:          asset.Duration,
-			})
+				Width:             width,
+				Height:            height,
+			}
+			if strings.TrimSpace(asset.ThumbnailURL) != "" {
+				video.Thumbnail = &models.InputFileString{Data: asset.ThumbnailURL}
+			}
+			out = append(out, video)
 		}
 	}
 	return out
+}
+
+func videoDimensions(aspectRatio float64) (int, int) {
+	if aspectRatio <= 0 {
+		return 0, 0
+	}
+	width := 720
+	height := int(float64(width) / aspectRatio)
+	if height <= 0 {
+		return 0, 0
+	}
+	return width, height
 }
 
 func downloadQuickMedia(ctx context.Context, rawURL, itemType string, index int) (filename string, data []byte, err error) {
