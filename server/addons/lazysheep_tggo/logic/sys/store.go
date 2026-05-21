@@ -95,7 +95,7 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 		}
 		key := row.BindingKey
 		if key == "" {
-			key = fmt.Sprintf("%d:%s:%d", row.BotId, row.SourceUrl, row.PublishChatId)
+			key = fmt.Sprintf("%d:%d:%d:%s", row.BotId, row.ReviewChatId, row.PublishChatId, row.SourceUrl)
 		}
 		res.Bindings[key] = &model.BindingRecord{
 			Key:             key,

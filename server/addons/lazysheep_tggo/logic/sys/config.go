@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -178,7 +179,7 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 			autoPush = true
 		}
 	}
-	key := fmt.Sprintf("%s:%s", in.BotKey, sourceURL)
+	key := fmt.Sprintf("%s:%d:%s", in.BotKey, in.ChatID, sourceURL)
 	return s.upsertBinding(ctx, key, &model.BindingRecord{
 		Key:             key,
 		BotKey:          in.BotKey,
@@ -294,7 +295,9 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 				}
 			}
 			if binding.AutoPush {
-				if pushErr := s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID); pushErr != nil {
+				if pushErr := retryPullAction(ctx, fmt.Sprintf("快速推送 botKey:%s binding:%s contentID:%s", in.BotKey, binding.Key, msg.ContentId), func() error {
+					return s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID)
+				}); pushErr != nil {
 					summary.Failed++
 					g.Log().Warningf(ctx, "快速推送 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, pushErr)
 					continue
@@ -308,28 +311,30 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 				}
 				continue
 			}
-			stored, storeErr := s.StoreNote(ctx, &lsysin.NoteStoreInp{
-				BotKey:     in.BotKey,
-				BindingKey: binding.Key,
-				Payload:    string(raw),
-			})
-			if storeErr != nil {
+			var stored *lsysin.NoteStoreModel
+			if storeErr := retryPullAction(ctx, fmt.Sprintf("保存/推送 botKey:%s binding:%s contentID:%s", in.BotKey, binding.Key, msg.ContentId), func() error {
+				res, err := s.StoreNote(ctx, &lsysin.NoteStoreInp{
+					BotKey:     in.BotKey,
+					BindingKey: binding.Key,
+					Payload:    string(raw),
+				})
+				if err != nil {
+					return err
+				}
+				stored = res
+				return s.pushCollectedNote(ctx, in.BotKey, binding, res.NoteId, in.ChatID)
+			}); storeErr != nil {
 				summary.Failed++
 				g.Log().Warningf(ctx, "保存 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, storeErr)
 				continue
 			}
 			summary.Stored++
-			if fingerprint != "" {
+			summary.Pushed++
+			if fingerprint != "" && stored != nil {
 				batchSeen[fingerprint] = struct{}{}
 				if err := pullDedupRemember(ctx, in.BotKey, fingerprint, stored.NoteId, sourceURLs); err != nil {
 					g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				}
-			}
-			if pushErr := s.pushCollectedNote(ctx, in.BotKey, binding, stored.NoteId, in.ChatID); pushErr != nil {
-				summary.PushFailed++
-				g.Log().Warningf(ctx, "推送采集笔记失败 botKey:%s noteId:%d err:%+v", in.BotKey, stored.NoteId, pushErr)
-			} else {
-				summary.Pushed++
 			}
 		}
 		return nil
@@ -347,6 +352,42 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 		}
 	}
 	return summary.Message(), nil
+}
+
+func retryPullAction(ctx context.Context, label string, action func() error) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = action()
+		if err == nil {
+			return nil
+		}
+		if !isRetriablePullError(err) || attempt == 3 {
+			return err
+		}
+		g.Log().Warningf(ctx, "%s 第%d次失败，准备重试 err:%+v", label, attempt, err)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+	return err
+}
+
+func isRetriablePullError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "timeout"),
+		strings.Contains(text, "temporarily"),
+		strings.Contains(text, "connection reset"),
+		strings.Contains(text, "eof"),
+		strings.Contains(text, "too many requests"),
+		strings.Contains(text, "429"),
+		strings.Contains(text, "try again"),
+		strings.Contains(text, "deadline exceeded"):
+		return true
+	default:
+		return false
+	}
 }
 
 type pullSummary struct {
