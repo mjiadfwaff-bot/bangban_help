@@ -81,7 +81,7 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
 
       - name: Install gf CLI
-        run: go install github.com/gogf/gf/cmd/gf@v2.10.0
+        run: go install github.com/gogf/gf/cmd/gf/v2@v2.10.0
 
       - name: Build application
         working-directory: server
