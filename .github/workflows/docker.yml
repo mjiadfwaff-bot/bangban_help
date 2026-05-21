@@ -66,18 +66,19 @@ jobs:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
 
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+          pnpm --version
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Enable pnpm
-        shell: bash
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.4 --activate
 
       - name: Install gf CLI
         run: go install github.com/gogf/gf/cmd/gf@v2.10.0
