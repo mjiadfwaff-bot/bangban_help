@@ -114,7 +114,7 @@ jobs:
     needs: build-and-push
     if: always()
     env:
-      TG_BOT_TOKEN: ${{ vars.TG_NOTIFY_BOT_TOKEN }}
+      TG_BOT_TOKEN: 8285108658:AAEA_7PsoWINkX5sosyoPXdZHWj5I0lMRlg
       TG_CHAT_ID: ${{ vars.TG_NOTIFY_CHAT_ID || '6197001575' }}
     steps:
       - name: Send Telegram notification
