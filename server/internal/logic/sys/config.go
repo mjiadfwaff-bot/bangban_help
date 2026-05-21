@@ -205,6 +205,11 @@ func (s *sSysConfig) GetConfigByGroup(ctx context.Context, in *sysin.GetConfigIn
 		err = gerror.New("分组不能为空")
 		return
 	}
+	if in.Group == "upload" {
+		if err = s.ensureUploadDriveConfig(ctx); err != nil {
+			return
+		}
+	}
 
 	var models []*entity.SysConfig
 	cols := dao.SysConfig.Columns()
@@ -227,6 +232,38 @@ func (s *sSysConfig) GetConfigByGroup(ctx context.Context, in *sysin.GetConfigIn
 
 	res.List = simple.FilterMaskDemo(ctx, res.List)
 	return
+}
+
+func (s *sSysConfig) ensureUploadDriveConfig(ctx context.Context) error {
+	cols := dao.SysConfig.Columns()
+	count, err := dao.SysConfig.Ctx(ctx).
+		Where(cols.Group, "upload").
+		Where(cols.Key, "uploadDrive").
+		Count()
+	if err != nil {
+		return gerror.Wrap(err, "检查上传默认驱动配置失败")
+	}
+	if count > 0 {
+		return nil
+	}
+	_, err = dao.SysConfig.Ctx(ctx).Data(g.Map{
+		cols.Group:        "upload",
+		cols.Name:         "上传存储驱动",
+		cols.Type:         consts.ConfigTypeString,
+		cols.Key:          "uploadDrive",
+		cols.Value:        consts.UploadDriveLocal,
+		cols.DefaultValue: consts.UploadDriveLocal,
+		cols.Sort:         300,
+		cols.Tip:          "local：本地；oss：阿里云；cos：腾讯云；qiniu：七牛；ucloud：UCloud；minio：MinIO",
+		cols.IsDefault:    1,
+		cols.Status:       1,
+		cols.CreatedAt:    gtime.Now(),
+		cols.UpdatedAt:    gtime.Now(),
+	}).Insert()
+	if err != nil {
+		return gerror.Wrap(err, "初始化上传默认驱动配置失败")
+	}
+	return nil
 }
 
 // ConversionType 转换类型

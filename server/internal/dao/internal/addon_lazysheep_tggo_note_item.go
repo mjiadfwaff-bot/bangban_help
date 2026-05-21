@@ -21,24 +21,24 @@ type AddonLazysheepTggoNoteItemDao struct {
 
 // AddonLazysheepTggoNoteItemColumns defines and stores column names for the table hg_addon_lazysheep_tggo_note_item.
 type AddonLazysheepTggoNoteItemColumns struct {
-	Id           string //
-	NoteId       string //
-	ItemIndex    string //
-	ItemType     string //
-	Title        string //
-	SubTitle     string //
-	Content      string //
-	Duration     string //
-	AspectRatio  string //
-	VerifyVideo  string //
-	AttachmentId string //
-	PreviewUrl   string //
-	LocalPath    string //
-	TgFileId     string //
-	Status       string //
-	CreatedAt    string //
-	UpdatedAt    string //
-	DeletedAt    string //
+	Id           string // 主键
+	NoteId       string // 笔记ID
+	ItemIndex    string // 序号
+	ItemType     string // 项目类型
+	Title        string // 标题
+	SubTitle     string // 副标题
+	Content      string // 内容
+	Duration     string // 时长
+	AspectRatio  string // 宽高比
+	VerifyVideo  string // 验证视频
+	AttachmentId string // 附件ID
+	PreviewUrl   string // 预览地址
+	LocalPath    string // 本地路径
+	TgFileId     string // Telegram fileId
+	Status       string // 状态
+	CreatedAt    string // 创建时间
+	UpdatedAt    string // 更新时间
+	DeletedAt    string // 删除时间
 }
 
 // addonLazysheepTggoNoteItemColumns holds the columns for the table hg_addon_lazysheep_tggo_note_item.

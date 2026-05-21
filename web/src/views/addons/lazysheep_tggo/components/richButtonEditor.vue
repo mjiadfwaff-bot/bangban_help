@@ -50,6 +50,7 @@
                 <template v-for="(button, buttonIndex) in row" :key="buttonIndex">
                   <div class="keyboard-button">
                     <span class="button-text">{{ button.text || '未命名' }}</span>
+                    <n-tag v-if="button.adminOnly" size="small" type="warning">管理员</n-tag>
                     <n-button text size="tiny" @click="openButton(rowIndex, buttonIndex)">
                       <template #icon>
                         <n-icon><EditOutlined /></n-icon>
@@ -74,6 +75,9 @@
       </n-form-item>
       <n-form-item label="动作">
         <n-select v-model:value="buttonForm.action" :options="actionOptions" />
+      </n-form-item>
+      <n-form-item label="权限">
+        <n-checkbox v-model:checked="buttonForm.adminOnly">仅该 Bot 管理员可用</n-checkbox>
       </n-form-item>
       <n-form-item label="内容">
         <n-input
@@ -167,6 +171,7 @@
       text: data.text || '',
       action: data.action || 'reply',
       value: data.value || '',
+      adminOnly: data.adminOnly === true,
     };
   }
 

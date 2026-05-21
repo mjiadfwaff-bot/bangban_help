@@ -21,32 +21,32 @@ type AddonLazysheepTggoBotDao struct {
 
 // AddonLazysheepTggoBotColumns defines and stores column names for the table hg_addon_lazysheep_tggo_bot.
 type AddonLazysheepTggoBotColumns struct {
-	Id            string //
-	BotKey        string //
-	MemberId      string //
-	Token         string //
-	BotName       string //
-	Username      string //
-	WebhookSecret string //
-	WebhookPath   string //
-	Enabled       string //
-	AutoPull      string //
-	AutoForward   string //
-	ReviewEnabled string //
-	AllowVerify   string //
-	AllowLocation string //
-	MemberVerify  string //
-	MemberPoints  string //
-	SignFollow    string //
-	SignChannels  string //
-	ReviewText    string //
-	PublishText   string //
-	Sort          string //
-	Status        string //
-	CreatedBy     string //
-	UpdatedBy     string //
-	CreatedAt     string //
-	UpdatedAt     string //
+	Id            string // 主键
+	BotKey        string // 机器人标识
+	MemberId      string // 所属后台用户
+	Token         string // Telegram Bot Token
+	BotName       string // 机器人名称
+	Username      string // Telegram username
+	WebhookSecret string // Webhook Secret
+	WebhookPath   string // Webhook 路径
+	Enabled       string // 是否启用
+	AutoPull      string // 自动采集
+	AutoForward   string // 自动推送
+	ReviewEnabled string // 审核开关
+	AllowVerify   string // 允许查看验证
+	AllowLocation string // 允许查看位置
+	MemberVerify  string // 验证仅会员
+	MemberPoints  string // 积分解锁
+	SignFollow    string // 签到关注校验
+	SignChannels  string // 签到必关频道
+	ReviewText    string // 审核文案模板
+	PublishText   string // 推送文案模板
+	Sort          string // 排序
+	Status        string // 状态
+	CreatedBy     string // 创建者
+	UpdatedBy     string // 更新者
+	CreatedAt     string // 创建时间
+	UpdatedAt     string // 更新时间
 }
 
 // addonLazysheepTggoBotColumns holds the columns for the table hg_addon_lazysheep_tggo_bot.

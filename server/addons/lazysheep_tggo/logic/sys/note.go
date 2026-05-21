@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"path"
 	"strconv"
 	"strings"
@@ -95,7 +96,10 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 		return nil, err
 	}
 	contentID := parseInt(msg.ContentId)
-	code := genNoteCode(contentID, msg.Id)
+	code, err := s.genBotNoteCode(ctx, botID, contentID, msg.Id)
+	if err != nil {
+		return nil, err
+	}
 
 	err = dao.AddonLazysheepTggoNote.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		noteID, err := s.upsertNoteRow(ctx, &noteStoreRow{
@@ -118,7 +122,7 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 		if err != nil {
 			return err
 		}
-		if err = s.replaceNoteItems(ctx, noteID, note.Items); err != nil {
+		if err = s.replaceNoteItems(ctx, noteID, botID, note.Items); err != nil {
 			return err
 		}
 		res = &sysin.NoteStoreModel{NoteId: noteID, Code: code}
@@ -170,10 +174,14 @@ func (s *sLazySheepTGGo) upsertNoteRow(ctx context.Context, row *noteStoreRow) (
 	return upsertByKey(ctx, dao.AddonLazysheepTggoNote.Ctx(ctx), cols.ContentId, row.ContentID, data)
 }
 
-func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, items []noteItem) error {
+func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, botID int, items []noteItem) error {
 	cols := dao.AddonLazysheepTggoNoteItem.Columns()
 	if _, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Where(cols.NoteId, noteID).Delete(); err != nil {
 		return gerror.Wrap(err, "清理旧笔记项失败")
+	}
+	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Where(assetCols.NoteId, noteID).Delete(); err != nil {
+		return gerror.Wrap(err, "清理旧笔记资源失败")
 	}
 	for index, item := range items {
 		row := g.Map{
@@ -188,6 +196,7 @@ func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, ite
 			cols.VerifyVideo: boolToInt(item.VerifyVideo),
 			cols.Status:      1,
 		}
+		var attachment *isysin.AttachmentListModel
 		if isRemoteMedia(item.Type) {
 			attachment, err := transferRemoteMedia(ctx, item.Type, item.Content)
 			if err != nil {
@@ -198,9 +207,47 @@ func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, ite
 				row[cols.LocalPath] = attachment.Path
 			}
 		}
-		if _, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Data(row).Insert(); err != nil {
+		itemID, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Data(row).InsertAndGetId()
+		if err != nil {
 			return gerror.Wrap(err, "保存笔记项失败")
 		}
+		if isRemoteMedia(item.Type) {
+			if err = s.insertNoteAsset(ctx, noteID, int64(botID), itemID, index, item, attachment); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) insertNoteAsset(ctx context.Context, noteID int64, botID int64, itemID int64, index int, item noteItem, attachment *isysin.AttachmentListModel) error {
+	cols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	assetType := "image"
+	if item.Type == noteTypeVideo {
+		assetType = "video"
+		if item.VerifyVideo {
+			assetType = "verify_video"
+		}
+	}
+	row := g.Map{
+		cols.NoteId:        noteID,
+		cols.BotId:         botID,
+		cols.ItemId:        itemID,
+		cols.AssetType:     assetType,
+		cols.SourceUrl:     item.Content,
+		cols.Duration:      item.Duration,
+		cols.AspectRatio:   item.AspectRatio,
+		cols.ConvertStatus: 1,
+		cols.Sort:          index,
+		cols.Status:        1,
+	}
+	if attachment != nil {
+		row[cols.AttachmentId] = attachment.Id
+		row[cols.PreviewUrl] = attachment.FileUrl
+		row[cols.LocalPath] = attachment.Path
+	}
+	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Data(row).Insert(); err != nil {
+		return gerror.Wrap(err, "保存笔记资源失败")
 	}
 	return nil
 }
@@ -228,7 +275,7 @@ func transferRemoteMedia(ctx context.Context, itemType, rawURL string) (*isysin.
 	if !gstr.HasPrefix(rawURL, "http://") && !gstr.HasPrefix(rawURL, "https://") {
 		return nil, gerror.New("仅支持 HTTP/HTTPS 媒体链接")
 	}
-	resp, err := g.Client().SetTimeout(time.Second * 60).Get(ctx, rawURL)
+	resp, err := g.Client().SetTimeout(time.Second*60).Get(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +340,41 @@ func genNoteCode(contentID int64, fallback string) string {
 	if raw < 0 {
 		raw = -raw
 	}
-	return fmt.Sprintf("LS%06d", raw%1000000)
+	seed := crc32.ChecksumIEEE([]byte(fmt.Sprintf("%d:%s", raw, fallback)))
+	letters := []byte{'A' + byte(seed%26), 'A' + byte((seed/26)%26)}
+	return fmt.Sprintf("%s%07d", string(letters), raw%10000000)
+}
+
+func (s *sLazySheepTGGo) genBotNoteCode(ctx context.Context, botID int, contentID int64, fallback string) (string, error) {
+	cols := dao.AddonLazysheepTggoNote.Columns()
+	existing, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
+		Fields(cols.Code).
+		Where(cols.BotId, botID).
+		Where(cols.ContentId, contentID).
+		Value()
+	if err != nil {
+		return "", gerror.Wrap(err, "查询已有笔记编号失败")
+	}
+	if !existing.IsNil() && strings.TrimSpace(existing.String()) != "" {
+		return existing.String(), nil
+	}
+	base := genNoteCode(contentID, fallback)
+	code := base
+	for i := 0; i < 20; i++ {
+		val, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
+			Fields(cols.Id).
+			Where(cols.BotId, botID).
+			Where(cols.Code, code).
+			Value()
+		if err != nil {
+			return "", gerror.Wrap(err, "检查笔记编号失败")
+		}
+		if val.IsNil() {
+			return code, nil
+		}
+		code = fmt.Sprintf("%s%07d", base[:2], (parseInt(base[2:])+int64(i)+1)%10000000)
+	}
+	return "", gerror.New("生成笔记编号失败")
 }
 
 func isRemoteMedia(itemType string) bool {

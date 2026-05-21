@@ -16,24 +16,89 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"golang.org/x/net/proxy"
+	"hotgo/internal/library/cache"
 )
 
 const apiBaseURL = "https://seats.bangchats.top/api"
 
-var httpClient = &http.Client{
-	Transport: &http.Transport{Proxy: nil},
-	Timeout:   30 * time.Second,
+var (
+	httpClient = &http.Client{
+		Transport: newTransport(""),
+		Timeout:   90 * time.Second,
+	}
+
+	streamHTTPClient = &http.Client{
+		Transport: newTransport(""),
+	}
+	clientMu sync.Mutex
+)
+
+func SetProxy(proxyRaw string) error {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	transport, err := buildTransport(proxyRaw)
+	if err != nil {
+		return err
+	}
+	streamTransport, err := buildTransport(proxyRaw)
+	if err != nil {
+		return err
+	}
+	httpClient.Transport = transport
+	streamHTTPClient.Transport = streamTransport
+	return nil
 }
 
-var streamHTTPClient = &http.Client{
-	Transport: &http.Transport{Proxy: nil},
+func newTransport(proxyRaw string) *http.Transport {
+	transport, _ := buildTransport(proxyRaw)
+	return transport
+}
+
+func buildTransport(proxyRaw string) (*http.Transport, error) {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	proxyRaw = strings.TrimSpace(proxyRaw)
+	if proxyRaw == "" {
+		return transport, nil
+	}
+	parsed, err := url.Parse(proxyRaw)
+	if err != nil {
+		return nil, fmt.Errorf("BangChat proxy parse failed: %w", err)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(parsed)
+	case "socks5", "socks5h":
+		dialer, err := proxy.FromURL(parsed, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("BangChat socks5 proxy init failed: %w", err)
+		}
+		transport.Proxy = nil
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialer.Dial(network, address)
+		}
+	default:
+		return nil, fmt.Errorf("BangChat proxy only supports http, https, socks5")
+	}
+	return transport, nil
 }
 
 type Client struct {
@@ -98,6 +163,10 @@ func ResolveToken(ctx context.Context, input string) (string, error) {
 			return token, nil
 		}
 		if u.Scheme == "http" || u.Scheme == "https" {
+			cacheKey := resolveTokenCacheKey(u)
+			if cached := loadResolvedToken(ctx, cacheKey); cached != "" {
+				return cached, nil
+			}
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, input, nil)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -105,6 +174,7 @@ func ResolveToken(ctx context.Context, input string) (string, error) {
 			}
 			defer resp.Body.Close()
 			if token := resp.Request.URL.Query().Get("token"); token != "" {
+				saveResolvedToken(ctx, cacheKey, token)
 				return token, nil
 			}
 		}
@@ -116,6 +186,35 @@ func ResolveToken(ctx context.Context, input string) (string, error) {
 		return "", errors.New("source url is empty")
 	}
 	return input, nil
+}
+
+func resolveTokenCacheKey(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	clone := *u
+	query := clone.Query()
+	query.Del("t")
+	clone.RawQuery = query.Encode()
+	return "bangchat:resolved-token:" + clone.String()
+}
+
+func loadResolvedToken(ctx context.Context, key string) string {
+	if key == "" {
+		return ""
+	}
+	val, err := cache.Instance().Get(ctx, key)
+	if err != nil || val.IsNil() {
+		return ""
+	}
+	return strings.TrimSpace(val.String())
+}
+
+func saveResolvedToken(ctx context.Context, key, token string) {
+	if key == "" || strings.TrimSpace(token) == "" {
+		return
+	}
+	_ = cache.Instance().Set(ctx, key, strings.TrimSpace(token), time.Hour*24)
 }
 
 func NewClient(ctx context.Context) (*Client, error) {
@@ -200,11 +299,15 @@ func (c *Client) CollectMessages(ctx context.Context, pairID string, limit int, 
 		if maxPages > 0 && page > maxPages {
 			break
 		}
+		remaining := limit - len(all)
+		if remaining <= 0 {
+			break
+		}
 		pageResp, err := c.signedPost(ctx, "/v1.Message/List", map[string]any{
 			"pair_id":       pairID,
 			"max_id":        maxID,
 			"include_quote": true,
-			"pager":         map[string]any{"limit": limit},
+			"pager":         map[string]any{"limit": remaining},
 		})
 		if err != nil {
 			return nil, err
@@ -240,10 +343,13 @@ func (c *Client) CollectMessages(ctx context.Context, pairID string, limit int, 
 			}
 			seen[id] = struct{}{}
 			all = append(all, raw)
+			if len(all) >= limit {
+				break
+			}
 		}
 		oldestID := rawMessageID(list[len(list)-1])
 		nextID := parseInt64(oldestID)
-		if nextID == 0 || nextID == maxID || len(list) < limit {
+		if nextID == 0 || nextID == maxID || len(list) < remaining || len(all) >= limit {
 			break
 		}
 		maxID = nextID

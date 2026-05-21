@@ -95,6 +95,22 @@
       },
     },
     {
+      title: '命令',
+      key: 'commands',
+      width: 220,
+      render(row) {
+        const commands = normalizeCommands(row);
+        if (!commands.length) {
+          return h('span', { class: 'text-gray-400' }, '未配置');
+        }
+        return h(
+          'div',
+          { style: 'display:flex;flex-wrap:wrap;gap:6px;' },
+          commands.slice(0, 3).map((item) => h(NTag, { bordered: false, type: 'info' }, { default: () => item }))
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
       width: 90,
@@ -143,6 +159,17 @@
     closeModal();
     showConfigModal.value = false;
     currentPlugin.value = null;
+  }
+
+  function normalizeCommands(row) {
+    const settings = row?.settings || {};
+    const list = Array.isArray(settings.commands) ? settings.commands : [];
+    const fallback = `${settings.command || ''}`.trim();
+    const cleaned = list.map((item) => `${item || ''}`.trim()).filter(Boolean);
+    if (fallback && !cleaned.includes(fallback)) {
+      cleaned.unshift(fallback);
+    }
+    return cleaned;
   }
 
   defineExpose({

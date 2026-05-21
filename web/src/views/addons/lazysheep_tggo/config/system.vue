@@ -65,7 +65,23 @@
     {
       title: '简介',
       key: 'description',
-      width: 320,
+      width: 260,
+    },
+    {
+      title: '命令',
+      key: 'commands',
+      width: 220,
+      render(row) {
+        const commands = normalizeCommands(row);
+        if (!commands.length) {
+          return h('span', { class: 'text-gray-400' }, '未配置');
+        }
+        return h(
+          'div',
+          { style: 'display:flex;flex-wrap:wrap;gap:6px;' },
+          commands.slice(0, 3).map((item) => h(NTag, { bordered: false, type: 'info' }, { default: () => item }))
+        );
+      },
     },
     {
       title: '全局启用',
@@ -183,5 +199,16 @@
     next.plugins = next.plugins || {};
     next.global = next.global || {};
     return next;
+  }
+
+  function normalizeCommands(row) {
+    const settings = row?.settings || {};
+    const list = Array.isArray(settings.commands) ? settings.commands : [];
+    const fallback = `${settings.command || ''}`.trim();
+    const cleaned = list.map((item) => `${item || ''}`.trim()).filter(Boolean);
+    if (fallback && !cleaned.includes(fallback)) {
+      cleaned.unshift(fallback);
+    }
+    return cleaned;
   }
 </script>

@@ -21,28 +21,28 @@ type AddonLazysheepTggoBindingDao struct {
 
 // AddonLazysheepTggoBindingColumns defines and stores column names for the table hg_addon_lazysheep_tggo_binding.
 type AddonLazysheepTggoBindingColumns struct {
-	Id              string //
-	BindingKey      string //
-	BotId           string //
-	BotKey          string //
-	SourceUrl       string //
-	SourceToken     string //
-	SourceRoomId    string //
-	SourcePairId    string //
-	ReviewChatId    string //
-	PublishChatId   string //
-	AutoPush        string //
-	ReviewEnabled   string //
-	PublishEnabled  string //
-	VerifyEnabled   string //
-	LocationEnabled string //
-	LastPullId      string //
-	LastCursor      string //
-	Status          string //
-	CreatedBy       string //
-	UpdatedBy       string //
-	CreatedAt       string //
-	UpdatedAt       string //
+	Id              string // 主键
+	BindingKey      string // 绑定标识
+	BotId           string // 机器人ID
+	BotKey          string // 机器人标识
+	SourceUrl       string // BangChat 链接
+	SourceToken     string // BangChat token
+	SourceRoomId    string // 来源房间ID
+	SourcePairId    string // 来源 pairId
+	ReviewChatId    string // 审核群ID
+	PublishChatId   string // 推送频道ID
+	AutoPush        string // 自动推送
+	ReviewEnabled   string // 审核开关
+	PublishEnabled  string // 推送开关
+	VerifyEnabled   string // 验证按钮开关
+	LocationEnabled string // 位置按钮开关
+	LastPullId      string // 最后拉取ID
+	LastCursor      string // 最后游标
+	Status          string // 状态
+	CreatedBy       string // 创建者
+	UpdatedBy       string // 更新者
+	CreatedAt       string // 创建时间
+	UpdatedAt       string // 更新时间
 }
 
 // addonLazysheepTggoBindingColumns holds the columns for the table hg_addon_lazysheep_tggo_binding.

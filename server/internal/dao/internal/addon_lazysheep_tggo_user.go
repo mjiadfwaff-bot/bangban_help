@@ -21,26 +21,28 @@ type AddonLazysheepTggoUserDao struct {
 
 // AddonLazysheepTggoUserColumns defines and stores column names for the table hg_addon_lazysheep_tggo_user.
 type AddonLazysheepTggoUserColumns struct {
-	Id           string //
-	TelegramId   string //
-	MemberId     string //
-	Username     string //
-	FirstName    string //
-	LastName     string //
-	LanguageCode string //
-	IsBot        string //
-	MemberLevel  string //
-	Points       string //
-	LastActiveAt string //
-	Status       string //
-	CreatedAt    string //
-	UpdatedAt    string //
+	Id           string // 主键
+	TelegramId   string // Telegram 用户ID
+	BotKey       string // 机器人标识
+	MemberId     string // 后台用户ID
+	Username     string // 用户名
+	FirstName    string // 名
+	LastName     string // 姓
+	LanguageCode string // 语言
+	IsBot        string // 是否机器人
+	MemberLevel  string // 会员等级
+	Points       string // 积分
+	LastActiveAt string // 最后活跃时间
+	Status       string // 状态
+	CreatedAt    string // 创建时间
+	UpdatedAt    string // 更新时间
 }
 
 // addonLazysheepTggoUserColumns holds the columns for the table hg_addon_lazysheep_tggo_user.
 var addonLazysheepTggoUserColumns = AddonLazysheepTggoUserColumns{
 	Id:           "id",
 	TelegramId:   "telegram_id",
+	BotKey:       "bot_key",
 	MemberId:     "member_id",
 	Username:     "username",
 	FirstName:    "first_name",

@@ -19,9 +19,10 @@ import (
 )
 
 type menuButton struct {
-	Text   string `json:"text"`
-	Action string `json:"action"`
-	Value  string `json:"value"`
+	Text      string `json:"text"`
+	Action    string `json:"action"`
+	Value     string `json:"value"`
+	AdminOnly bool   `json:"adminOnly"`
 }
 
 func init() {
@@ -75,6 +76,7 @@ func (p *welcomePlugin) Handle(ctx context.Context, b *bot.Bot, req *PluginReque
 		LanguageCode: req.Update.Message.From.LanguageCode,
 		IsBot:        req.Update.Message.From.IsBot,
 	})
+	isAdmin, _ := service.SysLazysheepTggo().IsBotAdmin(ctx, req.BotKey, req.Update.Message.From.ID)
 	settings := cfg.Settings
 	text := settingString(settings, "welcomeText", "欢迎使用<b>懒羊羊TGGo</b>")
 	params := &bot.SendMessageParams{
@@ -83,7 +85,7 @@ func (p *welcomePlugin) Handle(ctx context.Context, b *bot.Bot, req *PluginReque
 		ParseMode: models.ParseModeHTML,
 	}
 	if menuCfg := plugins["menu"]; menuCfg != nil && menuCfg.Enabled {
-		params.ReplyMarkup = buildReplyKeyboard(menuCfg.Settings, plugins)
+		params.ReplyMarkup = buildReplyKeyboard(menuCfg.Settings, plugins, isAdmin)
 	}
 	if params.ReplyMarkup == nil {
 		g.Log().Infof(ctx, "Telegram /start 未生成底部按钮 bot:%s", req.BotKey)
@@ -104,10 +106,18 @@ func (p *menuPlugin) Handle(ctx context.Context, b *bot.Bot, req *PluginRequest,
 	if text == "" {
 		return false, nil
 	}
+	userID := int64(0)
+	if req.Update.Message.From != nil {
+		userID = req.Update.Message.From.ID
+	}
+	isAdmin, _ := service.SysLazysheepTggo().IsBotAdmin(ctx, req.BotKey, userID)
 	for _, row := range settingButtons(cfg.Settings) {
 		for _, item := range row {
 			if item.Text != text {
 				continue
+			}
+			if item.AdminOnly && !isAdmin {
+				return true, executeMenuButton(ctx, b, req.Update.Message.Chat.ID, menuButton{Text: item.Text, Action: "reply", Value: "该菜单仅管理员可用。"})
 			}
 			return true, executeMenuButton(ctx, b, req.Update.Message.Chat.ID, item)
 		}
@@ -139,7 +149,7 @@ func executeMenuButton(ctx context.Context, b *bot.Bot, chatID any, item menuBut
 	return err
 }
 
-func buildReplyKeyboard(settings map[string]any, plugins map[string]*model.PluginConfig) *models.ReplyKeyboardMarkup {
+func buildReplyKeyboard(settings map[string]any, plugins map[string]*model.PluginConfig, isAdmin bool) *models.ReplyKeyboardMarkup {
 	rows := settingButtons(settings)
 	if settingBool(settings, "showPluginCommands", true) {
 		commandRow := make([]menuButton, 0)
@@ -170,6 +180,9 @@ func buildReplyKeyboard(settings map[string]any, plugins map[string]*model.Plugi
 		line := make([]models.KeyboardButton, 0, len(row))
 		for _, item := range row {
 			if item.Text == "" {
+				continue
+			}
+			if item.AdminOnly && !isAdmin {
 				continue
 			}
 			line = append(line, models.KeyboardButton{Text: item.Text})
@@ -253,14 +266,25 @@ func settingButtons(settings map[string]any) [][]menuButton {
 				continue
 			}
 			row = append(row, menuButton{
-				Text:   strings.TrimSpace(fmt.Sprint(itemMap["text"])),
-				Action: strings.TrimSpace(fmt.Sprint(itemMap["action"])),
-				Value:  strings.TrimSpace(fmt.Sprint(itemMap["value"])),
+				Text:      strings.TrimSpace(fmt.Sprint(itemMap["text"])),
+				Action:    strings.TrimSpace(fmt.Sprint(itemMap["action"])),
+				Value:     strings.TrimSpace(fmt.Sprint(itemMap["value"])),
+				AdminOnly: settingMapBool(itemMap, "adminOnly", false),
 			})
 		}
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func settingMapBool(settings map[string]any, key string, fallback bool) bool {
+	if settings == nil {
+		return fallback
+	}
+	if v, ok := settings[key].(bool); ok {
+		return v
+	}
+	return fallback
 }
 
 func toAnySlice(raw any) []any {

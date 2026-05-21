@@ -1,4 +1,5 @@
 INSERT IGNORE INTO `hg_sys_config` (`id`, `group`, `name`, `type`, `key`, `value`, `default_value`, `sort`, `tip`, `is_default`, `status`, `created_at`, `updated_at`) VALUES
+(28, 'upload', '上传存储驱动', 'string', 'uploadDrive', 'local', 'local', 300, 'local：本地；oss：阿里云；cos：腾讯云；qiniu：七牛；ucloud：UCloud；minio：MinIO', 1, 1, NOW(), NOW()),
 (29, 'upload', '上传图片大小限制', 'int', 'uploadImageSize', '2', '2', 310, '单位：MB', 1, 1, NOW(), NOW()),
 (30, 'upload', '上传图片类型限制', 'string', 'uploadImageType', 'jpg,jpeg,gif,png,svg', 'jpg,jpeg,gif,png,svg', 320, '图片上传后缀类型限制', 1, 1, NOW(), NOW()),
 (31, 'upload', '上传文件大小限制', 'int', 'uploadFileSize', '1000', '10', 330, '单位：MB', 1, 1, NOW(), NOW()),

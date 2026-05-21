@@ -366,6 +366,7 @@
     uploadMinioBucket: '',
     uploadMinioDomain: '',
   });
+  const defaultFormValue = { ...formValue.value };
 
   function formSubmit() {
     formRef.value.validate((errors) => {
@@ -384,7 +385,7 @@
     show.value = true;
     getConfig({ group: group.value })
       .then((res) => {
-        formValue.value = res.list;
+        formValue.value = { ...defaultFormValue, ...(res.list || {}) };
       })
       .finally(() => {
         show.value = false;

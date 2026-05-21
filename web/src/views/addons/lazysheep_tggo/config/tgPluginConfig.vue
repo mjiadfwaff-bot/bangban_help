@@ -12,6 +12,16 @@
     <n-form-item label="插件简介">
       <n-input v-model:value="formValue.description" type="textarea" />
     </n-form-item>
+    <n-form-item v-if="hasCommandConfig" label="命令配置">
+      <n-space vertical class="full-width">
+        <n-input v-model:value="formValue.command" placeholder="主命令，例如 /拉取" />
+        <n-dynamic-input
+          v-model:value="formValue.commands"
+          :min="1"
+          placeholder="输入命令，例如 /绑定"
+        />
+      </n-space>
+    </n-form-item>
     <n-form-item label="开关">
       <n-space>
         <n-checkbox v-model:checked="formValue.enabled">全局启用</n-checkbox>
@@ -43,6 +53,55 @@
       v-else-if="formValue.key === 'menu'"
       v-model:value="menuValue"
     />
+    <template v-else-if="formValue.key === 'collector'">
+      <n-form-item label="默认模式">
+        <n-select
+          v-model:value="collectorValue.defaultMode"
+          :options="[
+            { label: '快速采集：直接发布到当前会话', value: 'quick' },
+            { label: '审核发布：先进入审核群', value: 'review' },
+          ]"
+        />
+      </n-form-item>
+      <n-form-item label="菜单显示">
+        <n-switch v-model:value="collectorValue.menuVisible" />
+      </n-form-item>
+      <n-form-item label="公开入口">
+        <n-space>
+          <n-checkbox v-model:checked="collectorValue.showVerifyLink">显示验证视频入口</n-checkbox>
+          <n-checkbox v-model:checked="collectorValue.showLocationLink">显示位置入口</n-checkbox>
+        </n-space>
+      </n-form-item>
+      <n-form-item label="页脚">
+        <n-input
+          v-model:value="collectorValue.footer"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 8 }"
+          placeholder="每条采集笔记底部展示的文案，支持 Telegram HTML"
+        />
+      </n-form-item>
+      <n-form-item label="推送模板">
+        <n-input
+          v-model:value="collectorValue.captionTemplate"
+          type="textarea"
+          :autosize="{ minRows: 6, maxRows: 12 }"
+          placeholder="{title} {text} {code} {verify_link} {location_link} {footer}"
+        />
+      </n-form-item>
+      <n-form-item label="绑定提示">
+        <n-input
+          v-model:value="collectorValue.bindHelpText"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 6 }"
+        />
+      </n-form-item>
+      <n-form-item label="入口文案">
+        <n-space vertical class="full-width">
+          <n-input v-model:value="collectorValue.verifyLinkText" placeholder="验证视频入口文案" />
+          <n-input v-model:value="collectorValue.locationLinkText" placeholder="位置入口文案" />
+        </n-space>
+      </n-form-item>
+    </template>
     <n-form-item v-else label="配置 JSON">
       <n-input
         v-model:value="settingsText"
@@ -75,6 +134,10 @@
   const settingsText = ref('{}');
   const welcomeValue = ref<any>({});
   const menuValue = ref<any>({});
+  const collectorValue = ref<any>({});
+  const hasCommandConfig = computed(() => {
+    return ['collector', 'signin', 'member', 'review', 'welcome', 'menu'].includes(formValue.value.key);
+  });
   const mountPluginOptions = computed(() => {
     const key = formValue.value.key;
     return Object.values((formValue.value as any).allPlugins || {})
@@ -95,10 +158,27 @@
         text: formValue.value.settings?.welcomeText || '',
         mountedPlugins: normalizeMountedPlugins(formValue.value.settings),
       };
+      formValue.value.command = formValue.value.settings?.command || '';
+      formValue.value.commands = normalizeCommands(formValue.value.settings?.commands, formValue.value.settings?.command);
       menuValue.value = {
         menuVisible: formValue.value.settings?.menuVisible !== false,
         buttons: formValue.value.settings?.buttons || [],
         showPluginCommands: formValue.value.settings?.showPluginCommands !== false,
+        command: formValue.value.settings?.command || '',
+        commands: normalizeCommands(formValue.value.settings?.commands, formValue.value.settings?.command),
+      };
+      collectorValue.value = {
+        defaultMode: formValue.value.settings?.defaultMode || 'quick',
+        menuVisible: formValue.value.settings?.menuVisible !== false,
+        command: formValue.value.settings?.command || '/拉取',
+        commands: normalizeCommands(formValue.value.settings?.commands, formValue.value.settings?.command),
+        showVerifyLink: formValue.value.settings?.showVerifyLink !== false,
+        showLocationLink: formValue.value.settings?.showLocationLink !== false,
+        footer: formValue.value.settings?.footer || '',
+        captionTemplate: formValue.value.settings?.captionTemplate || '',
+        bindHelpText: formValue.value.settings?.bindHelpText || '',
+        verifyLinkText: formValue.value.settings?.verifyLinkText || '📒 点击查看验证视频',
+        locationLinkText: formValue.value.settings?.locationLinkText || '📍 点击查看位置',
       };
     },
     { immediate: true }
@@ -118,10 +198,32 @@
         menuVisible: menuValue.value.menuVisible !== false,
         buttons: menuValue.value.buttons || [],
         showPluginCommands: menuValue.value.showPluginCommands !== false,
+        command: menuValue.value.command || '',
+        commands: normalizeCommands(menuValue.value.commands, menuValue.value.command),
+      };
+    } else if (formValue.value.key === 'collector') {
+      formValue.value.settings = {
+        ...(formValue.value.settings || {}),
+        defaultMode: collectorValue.value.defaultMode || 'quick',
+        menuVisible: collectorValue.value.menuVisible !== false,
+        command: collectorValue.value.command || '/拉取',
+        commands: normalizeCommands(collectorValue.value.commands, collectorValue.value.command),
+        showVerifyLink: collectorValue.value.showVerifyLink !== false,
+        showLocationLink: collectorValue.value.showLocationLink !== false,
+        footer: collectorValue.value.footer || '',
+        captionTemplate: collectorValue.value.captionTemplate || '',
+        bindHelpText: collectorValue.value.bindHelpText || '',
+        verifyLinkText: collectorValue.value.verifyLinkText || '',
+        locationLinkText: collectorValue.value.locationLinkText || '',
       };
     } else {
       try {
-        formValue.value.settings = JSON.parse(settingsText.value || '{}');
+        const parsed = JSON.parse(settingsText.value || '{}');
+        if (hasCommandConfig.value) {
+          parsed.command = formValue.value.command || parsed.command || '';
+          parsed.commands = normalizeCommands(formValue.value.commands, parsed.command);
+        }
+        formValue.value.settings = parsed;
       } catch (e) {
         message.error('配置 JSON 格式不正确');
         return;
@@ -140,4 +242,26 @@
     }
     return [];
   }
+
+  function normalizeCommands(commands, fallback) {
+    const list = Array.isArray(commands) ? commands : [];
+    const cleaned = list
+      .map((item) => `${item || ''}`.trim())
+      .filter((item) => item !== '');
+    const primary = `${fallback || ''}`.trim();
+    if (primary && !cleaned.includes(primary)) {
+      cleaned.unshift(primary);
+    }
+    if (!cleaned.length) {
+      cleaned.push('/拉取');
+    }
+    return cleaned;
+  }
+
 </script>
+
+<style scoped>
+  .full-width {
+    width: 100%;
+  }
+</style>

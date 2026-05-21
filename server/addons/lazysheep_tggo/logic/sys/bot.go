@@ -23,6 +23,7 @@ import (
 	"hotgo/addons/lazysheep_tggo/logic/telegram"
 	"hotgo/addons/lazysheep_tggo/model"
 	lsysin "hotgo/addons/lazysheep_tggo/model/input/sysin"
+	"hotgo/addons/lazysheep_tggo/service"
 )
 
 type runtimeStore struct {
@@ -219,7 +220,7 @@ func (s *sLazySheepTGGo) SetWebhook(ctx context.Context, botKey, webhookURL stri
 	body := g.Map{
 		"url":             webhookURL,
 		"secret_token":    cfg.WebhookSecret,
-		"allowed_updates": []string{"message", "callback_query"},
+		"allowed_updates": telegramAllowedUpdates(),
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://api.telegram.org/bot%s/setWebhook", cfg.Token), bytes.NewReader(raw))
@@ -251,6 +252,7 @@ func (s *sLazySheepTGGo) buildClient(ctx context.Context, cfg *model.BotConfig) 
 	opts := []bot.Option{
 		bot.WithHTTPClient(telegramHTTPTimeout-time.Second, httpClient),
 		bot.WithDefaultHandler(s.defaultHandler(cfg.Key)),
+		bot.WithAllowedUpdates(telegramAllowedUpdates()),
 	}
 	if cfg.WebhookSecret != "" {
 		opts = append(opts, bot.WithWebhookSecretToken(cfg.WebhookSecret))
@@ -262,7 +264,12 @@ func (s *sLazySheepTGGo) buildClient(ctx context.Context, cfg *model.BotConfig) 
 	s.registerBotCommands(ctx, client, cfg)
 	for _, h := range telegram.MessageHandlers() {
 		handler := h
-		client.RegisterHandler(bot.HandlerTypeMessageText, handler.Pattern(), handler.MatchType(), func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		client.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+			return matchTelegramMessage(update.Message, handler.Pattern(), handler.MatchType(), handler.Key()) ||
+				matchTelegramMessage(update.ChannelPost, handler.Pattern(), handler.MatchType(), handler.Key()) ||
+				matchTelegramMessage(update.EditedMessage, handler.Pattern(), handler.MatchType(), handler.Key()) ||
+				matchTelegramMessage(update.EditedChannelPost, handler.Pattern(), handler.MatchType(), handler.Key())
+		}, func(ctx context.Context, b *bot.Bot, update *models.Update) {
 			ctx = telegram.WithBotKey(ctx, cfg.Key)
 			if err := handler.Handle(ctx, b, update); err != nil {
 				g.Log().Warningf(ctx, "telegram message handler failed bot:%s handler:%s err:%+v", cfg.Key, handler.Key(), err)
@@ -281,17 +288,116 @@ func (s *sLazySheepTGGo) buildClient(ctx context.Context, cfg *model.BotConfig) 
 	return client, nil
 }
 
-func (s *sLazySheepTGGo) registerBotCommands(ctx context.Context, client *bot.Bot, cfg *model.BotConfig) {
-	commands := []models.BotCommand{
-		{Command: "start", Description: "打开欢迎语和底部菜单"},
+func matchTelegramMessage(msg *models.Message, pattern string, matchType bot.MatchType, key string) bool {
+	if msg == nil {
+		return false
 	}
-	if _, err := client.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: commands}); err != nil {
-		g.Log().Warningf(ctx, "注册 Telegram 命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+	data := msg.Text
+	entities := msg.Entities
+	if matchTelegramTextAlias(data, key) {
+		return true
+	}
+	switch matchType {
+	case bot.MatchTypeExact:
+		return data == pattern
+	case bot.MatchTypePrefix:
+		return strings.HasPrefix(data, pattern)
+	case bot.MatchTypeContains:
+		return strings.Contains(data, pattern)
+	case bot.MatchTypeCommand, bot.MatchTypeCommandStartOnly:
+		for _, e := range entities {
+			if e.Type != models.MessageEntityTypeBotCommand {
+				continue
+			}
+			if e.Offset != 0 && matchType == bot.MatchTypeCommandStartOnly {
+				continue
+			}
+			end := e.Offset + e.Length
+			if end > len(data) || e.Offset < 0 {
+				continue
+			}
+			if data[e.Offset+1:end] == pattern {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func (s *sLazySheepTGGo) registerBotCommands(ctx context.Context, client *bot.Bot, cfg *model.BotConfig) {
+	privateCommands := []models.BotCommand{{Command: "start", Description: "打开欢迎语和底部菜单"}}
+	groupCommands := []models.BotCommand{}
+	if state, err := service.SysLazysheepTggo().GetState(ctx); err == nil && state != nil {
+		plugins := state.Plugins
+		if botCfg := state.Bots[cfg.Key]; botCfg != nil && botCfg.Plugins != nil {
+			plugins = botCfg.Plugins
+		}
+		groupCommands = append(groupCommands, pluginBotCommands(plugins)...)
+	}
+	privateCommands = dedupeBotCommands(privateCommands)
+	groupCommands = dedupeBotCommands(groupCommands)
+	if _, err := client.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: privateCommands,
+		Scope:    &models.BotCommandScopeAllPrivateChats{},
+	}); err != nil {
+		g.Log().Warningf(ctx, "注册 Telegram 私聊命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+	}
+	if len(groupCommands) > 0 {
+		if _, err := client.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+			Commands: groupCommands,
+			Scope:    &models.BotCommandScopeDefault{},
+		}); err != nil {
+			g.Log().Warningf(ctx, "注册 Telegram 默认命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
+		if _, err := client.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+			Commands: groupCommands,
+			Scope:    &models.BotCommandScopeAllGroupChats{},
+		}); err != nil {
+			g.Log().Warningf(ctx, "注册 Telegram 群聊命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
+		if _, err := client.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+			Commands: groupCommands,
+			Scope:    &models.BotCommandScopeAllChatAdministrators{},
+		}); err != nil {
+			g.Log().Warningf(ctx, "注册 Telegram 管理员命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
+		g.Log().Infof(ctx, "Telegram 群聊命令菜单已注册 bot:%s commands:%v", cfg.Key, botCommandNames(groupCommands))
+	} else {
+		if _, err := client.DeleteMyCommands(ctx, &bot.DeleteMyCommandsParams{Scope: &models.BotCommandScopeDefault{}}); err != nil {
+			g.Log().Warningf(ctx, "清理 Telegram 默认命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
 	}
 	if _, err := client.SetChatMenuButton(ctx, &bot.SetChatMenuButtonParams{
-		MenuButton: &models.MenuButtonCommands{},
+		MenuButton: &models.MenuButtonCommands{Type: models.MenuButtonTypeCommands},
 	}); err != nil {
 		g.Log().Warningf(ctx, "注册 Telegram 菜单按钮失败 bot:%s err:%+v", cfg.Key, err)
+	}
+}
+
+func botSettingBool(settings map[string]any, key string, fallback bool) bool {
+	if settings == nil {
+		return fallback
+	}
+	if v, ok := settings[key].(bool); ok {
+		return v
+	}
+	return fallback
+}
+
+func botToAnySlice(raw any) []any {
+	switch v := raw.(type) {
+	case []any:
+		return v
+	case []string:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, item)
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

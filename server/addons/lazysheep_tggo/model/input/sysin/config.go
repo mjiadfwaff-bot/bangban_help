@@ -128,12 +128,16 @@ type BindSourceInp struct {
 	SourceToken   string `json:"sourceToken"`
 	ReviewChatID  int64  `json:"reviewChatId"`
 	PublishChatID int64  `json:"publishChatId"`
+	ChatID        int64  `json:"chatId"`
+	Mode          string `json:"mode"`
 	AutoPush      bool   `json:"autoPush"`
 }
 
 type PullInp struct {
 	BotKey    string `json:"botKey"`
 	SourceURL string `json:"sourceUrl"`
+	ChatID    int64  `json:"chatId"`
+	Limit     int    `json:"limit"`
 }
 
 type SignInInp struct {

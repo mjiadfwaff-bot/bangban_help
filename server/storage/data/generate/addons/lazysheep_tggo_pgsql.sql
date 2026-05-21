@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_note (
   updated_at timestamp DEFAULT NULL,
   deleted_at timestamp DEFAULT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_content_id ON hg_addon_lazysheep_tggo_note (content_id);
+CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_bot_content_id ON hg_addon_lazysheep_tggo_note (bot_id, content_id);
+CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_bot_code ON hg_addon_lazysheep_tggo_note (bot_id, code);
 CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_bot_binding ON hg_addon_lazysheep_tggo_note (bot_id, binding_id);
 
 CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_note_item (
@@ -130,3 +131,28 @@ CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_note_item (
   deleted_at timestamp DEFAULT NULL
 );
 CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_item_note_id ON hg_addon_lazysheep_tggo_note_item (note_id);
+
+CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_note_asset (
+  id bigserial PRIMARY KEY,
+  note_id bigint NOT NULL DEFAULT 0,
+  bot_id bigint NOT NULL DEFAULT 0,
+  item_id bigint DEFAULT 0,
+  asset_type varchar(32) NOT NULL DEFAULT '',
+  source_url varchar(500) NOT NULL DEFAULT '',
+  attachment_id bigint DEFAULT 0,
+  preview_url varchar(500) DEFAULT '',
+  local_path varchar(500) DEFAULT '',
+  mime_type varchar(128) DEFAULT '',
+  file_size bigint DEFAULT 0,
+  duration integer DEFAULT 0,
+  aspect_ratio decimal(10,4) DEFAULT 0.0000,
+  tg_file_id varchar(255) DEFAULT '',
+  convert_status smallint DEFAULT 1,
+  sort integer DEFAULT 0,
+  status smallint DEFAULT 1,
+  created_at timestamp DEFAULT NULL,
+  updated_at timestamp DEFAULT NULL,
+  deleted_at timestamp DEFAULT NULL
+);
+CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_asset_note_id ON hg_addon_lazysheep_tggo_note_asset (note_id);
+CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_asset_bot_id ON hg_addon_lazysheep_tggo_note_asset (bot_id);

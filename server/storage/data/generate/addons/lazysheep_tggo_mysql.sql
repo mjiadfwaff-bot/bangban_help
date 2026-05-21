@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_note` (
   `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
   `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `content_id` (`content_id`),
+  UNIQUE KEY `bot_content_id` (`bot_id`,`content_id`),
+  UNIQUE KEY `bot_code` (`bot_id`,`code`),
   KEY `bot_binding` (`bot_id`,`binding_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='懒羊羊TGGo_笔记';
 
@@ -135,3 +136,29 @@ CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_note_item` (
   PRIMARY KEY (`id`),
   KEY `note_id` (`note_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='懒羊羊TGGo_笔记项';
+
+CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_note_asset` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `note_id` bigint(20) NOT NULL DEFAULT 0 COMMENT '笔记ID',
+  `bot_id` bigint(20) NOT NULL DEFAULT 0 COMMENT '机器人ID',
+  `item_id` bigint(20) DEFAULT 0 COMMENT '笔记项ID',
+  `asset_type` varchar(32) NOT NULL DEFAULT '' COMMENT '资源类型:image/video/verify_video',
+  `source_url` varchar(500) NOT NULL DEFAULT '' COMMENT '源地址',
+  `attachment_id` bigint(20) DEFAULT 0 COMMENT '附件ID',
+  `preview_url` varchar(500) DEFAULT '' COMMENT '预览地址',
+  `local_path` varchar(500) DEFAULT '' COMMENT '本地路径',
+  `mime_type` varchar(128) DEFAULT '' COMMENT 'MIME类型',
+  `file_size` bigint(20) DEFAULT 0 COMMENT '文件大小',
+  `duration` int(11) DEFAULT 0 COMMENT '时长',
+  `aspect_ratio` decimal(10,4) DEFAULT 0.0000 COMMENT '宽高比',
+  `tg_file_id` varchar(255) DEFAULT '' COMMENT 'Telegram fileId',
+  `convert_status` tinyint(1) DEFAULT 1 COMMENT '转换状态',
+  `sort` int(11) DEFAULT 0 COMMENT '排序',
+  `status` tinyint(1) DEFAULT 1 COMMENT '状态',
+  `created_at` datetime DEFAULT NULL COMMENT '创建时间',
+  `updated_at` datetime DEFAULT NULL COMMENT '更新时间',
+  `deleted_at` datetime DEFAULT NULL COMMENT '删除时间',
+  PRIMARY KEY (`id`),
+  KEY `note_id` (`note_id`),
+  KEY `bot_id` (`bot_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='懒羊羊TGGo_笔记资源';

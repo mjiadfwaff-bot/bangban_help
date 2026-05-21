@@ -98,16 +98,18 @@ func (s *sLazySheepTGGo) loadState(ctx context.Context) (res *model.State, err e
 			key = fmt.Sprintf("%d:%s:%d", row.BotId, row.SourceUrl, row.PublishChatId)
 		}
 		res.Bindings[key] = &model.BindingRecord{
-			Key:           key,
-			BotKey:        row.BotKey,
-			SourceURL:     row.SourceUrl,
-			SourceToken:   row.SourceToken,
-			ReviewChatID:  int64(row.ReviewChatId),
-			PublishChatID: int64(row.PublishChatId),
-			Status:        statusLabel(row.Status),
-			AutoPush:      row.AutoPush > 0,
-			CreatedAt:     row.CreatedAt,
-			UpdatedAt:     row.UpdatedAt,
+			Key:             key,
+			BotKey:          row.BotKey,
+			SourceURL:       row.SourceUrl,
+			SourceToken:     row.SourceToken,
+			ReviewChatID:    int64(row.ReviewChatId),
+			PublishChatID:   int64(row.PublishChatId),
+			Status:          statusLabel(row.Status),
+			AutoPush:        row.AutoPush > 0,
+			VerifyEnabled:   row.VerifyEnabled > 0,
+			LocationEnabled: row.LocationEnabled > 0,
+			CreatedAt:       row.CreatedAt,
+			UpdatedAt:       row.UpdatedAt,
 		}
 	}
 	if err = s.loadPlugins(ctx, res); err != nil {
@@ -262,6 +264,9 @@ func (s *sLazySheepTGGo) upsertUser(ctx context.Context, key int64, item *model.
 	} else {
 		row[cols.CreatedAt] = gtime.Now()
 	}
+	if item.BotKey == "" {
+		return nil
+	}
 	existing, err := dao.AddonLazysheepTggoUser.Ctx(ctx).
 		Fields(cols.Id).
 		Where("bot_key", item.BotKey).
@@ -271,8 +276,25 @@ func (s *sLazySheepTGGo) upsertUser(ctx context.Context, key int64, item *model.
 		return gerror.Wrap(err, "查询Telegram用户失败")
 	}
 	if existing.IsNil() {
+		count, err := dao.AddonLazysheepTggoUser.Ctx(ctx).Where("bot_key", item.BotKey).Count()
+		if err != nil {
+			return gerror.Wrap(err, "统计Telegram用户失败")
+		}
+		if count == 0 {
+			row[cols.MemberLevel] = 9
+		}
 		_, err = dao.AddonLazysheepTggoUser.Ctx(ctx).Data(row).Insert()
 		return err
+	}
+	adminCount, err := dao.AddonLazysheepTggoUser.Ctx(ctx).
+		Where("bot_key", item.BotKey).
+		WhereGTE(cols.MemberLevel, 9).
+		Count()
+	if err != nil {
+		return gerror.Wrap(err, "统计机器人管理员失败")
+	}
+	if adminCount == 0 {
+		row[cols.MemberLevel] = 9
 	}
 	_, err = dao.AddonLazysheepTggoUser.Ctx(ctx).Where(cols.Id, existing.Int64()).Data(row).Update()
 	return err
@@ -295,8 +317,8 @@ func (s *sLazySheepTGGo) upsertBinding(ctx context.Context, key string, item *mo
 		cols.AutoPush:        boolToInt(item.AutoPush),
 		cols.ReviewEnabled:   1,
 		cols.PublishEnabled:  1,
-		cols.VerifyEnabled:   1,
-		cols.LocationEnabled: 1,
+		cols.VerifyEnabled:   boolToInt(item.VerifyEnabled),
+		cols.LocationEnabled: boolToInt(item.LocationEnabled),
 		cols.LastCursor:      "",
 		cols.Status:          1,
 		cols.UpdatedAt:       gtime.Now(),

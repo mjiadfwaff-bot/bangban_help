@@ -52,16 +52,18 @@ type UserRecord struct {
 }
 
 type BindingRecord struct {
-	Key           string      `json:"key"`
-	BotKey        string      `json:"botKey"`
-	SourceURL     string      `json:"sourceUrl"`
-	SourceToken   string      `json:"sourceToken"`
-	ReviewChatID  int64       `json:"reviewChatId"`
-	PublishChatID int64       `json:"publishChatId"`
-	Status        string      `json:"status"`
-	AutoPush      bool        `json:"autoPush"`
-	CreatedAt     *gtime.Time `json:"createdAt"`
-	UpdatedAt     *gtime.Time `json:"updatedAt"`
+	Key             string      `json:"key"`
+	BotKey          string      `json:"botKey"`
+	SourceURL       string      `json:"sourceUrl"`
+	SourceToken     string      `json:"sourceToken"`
+	ReviewChatID    int64       `json:"reviewChatId"`
+	PublishChatID   int64       `json:"publishChatId"`
+	Status          string      `json:"status"`
+	AutoPush        bool        `json:"autoPush"`
+	VerifyEnabled   bool        `json:"verifyEnabled"`
+	LocationEnabled bool        `json:"locationEnabled"`
+	CreatedAt       *gtime.Time `json:"createdAt"`
+	UpdatedAt       *gtime.Time `json:"updatedAt"`
 }
 
 type Settings struct {
@@ -143,15 +145,33 @@ func DefaultPluginConfigs() map[string]*PluginConfig {
 		"collector": {
 			Key:         "collector",
 			Name:        "采集插件",
-			Subtitle:    "BangChat 资料采集",
-			Description: "BangChat 链接解析、翻页采集、笔记入库与资源转换。",
+			Subtitle:    "BangChat 绑定采集",
+			Description: "支持快速采集、审核发布、笔记编号、验证视频和位置私聊解锁入口。",
 			Category:    "采集",
 			Enabled:     true,
 			UserEnabled: true,
 			Paid:        false,
 			Price:       "0",
 			Sort:        10,
-			Settings:    map[string]any{"autoPull": false, "menuVisible": true, "command": "/拉取"},
+			Settings: map[string]any{
+				"autoPull":           false,
+				"menuVisible":        true,
+				"command":            "/pull",
+				"commands":           []any{"/bind", "/bind_review", "/bind_publish", "/pull"},
+				"defaultMode":        "quick",
+				"showVerifyLink":     true,
+				"showLocationLink":   true,
+				"footer":             "",
+				"bindHelpText":       "请发送 /bind <BangChat链接>。默认快速模式会把采集结果发送到当前群聊或频道；如需审核后发布，请发送 /bind_review <BangChat链接>。",
+				"quickBindText":      "已进入快速采集模式，内容会直接发送到当前会话。发送 /pull 可立即采集。",
+				"reviewBindText":     "已进入审核发布模式，内容会先发送到当前审核群。请在公开频道中发送 /绑定发布 后，再点击审核消息下方的发布按钮。",
+				"publishBindText":    "发布频道绑定成功，审核群中的内容点击发布后会推送到当前频道。",
+				"pullingText":        "开始采集，请稍候...",
+				"verifyLinkText":     "📒 点击查看验证视频",
+				"locationLinkText":   "📍 点击查看位置",
+				"captionTemplate":    "<b>{title}</b>\n\n{text}\n\n编号：<code>{code}</code>\n\n{verify_link}\n{location_link}\n\n{footer}",
+				"emptyFooterTipText": "当前未配置页脚。发送 /设置页脚 <内容> 可以设置每条笔记底部文案。",
+			},
 		},
 		"welcome": {
 			Key:         "welcome",
@@ -201,7 +221,7 @@ func DefaultPluginConfigs() map[string]*PluginConfig {
 			Paid:        false,
 			Price:       "0",
 			Sort:        20,
-			Settings:    map[string]any{"allowVerify": true, "allowLocation": true, "menuVisible": false, "command": "/审核"},
+			Settings:    map[string]any{"allowVerify": true, "allowLocation": true, "menuVisible": false, "command": "/review"},
 		},
 		"signin": {
 			Key:         "signin",
@@ -214,7 +234,7 @@ func DefaultPluginConfigs() map[string]*PluginConfig {
 			Paid:        false,
 			Price:       "0",
 			Sort:        30,
-			Settings:    map[string]any{"followRequired": false, "menuVisible": true, "command": "/签到"},
+			Settings:    map[string]any{"followRequired": false, "menuVisible": true, "command": "/sign", "commands": []any{"/sign"}},
 		},
 		"member": {
 			Key:         "member",
@@ -227,7 +247,7 @@ func DefaultPluginConfigs() map[string]*PluginConfig {
 			Paid:        true,
 			Price:       "99",
 			Sort:        40,
-			Settings:    map[string]any{"verifyMode": "none", "points": 0, "menuVisible": false, "command": "/会员"},
+			Settings:    map[string]any{"verifyMode": "none", "points": 0, "menuVisible": false, "command": "/member", "commands": []any{"/member"}},
 		},
 	}
 }

@@ -63,6 +63,10 @@
           key: 'users',
         },
         {
+          label: '重启',
+          key: 'restart',
+        },
+        {
           label: '删除',
           key: 'delete',
         },
@@ -93,6 +97,9 @@
               }
               if (key === 'users') {
                 handleUsers(record);
+              }
+              if (key === 'restart') {
+                handleRestart(record);
               }
               if (key === 'delete') {
                 handleDelete(record);
@@ -140,6 +147,23 @@
       message.success('机器人已启动');
     } catch (e) {
       message.error('机器人启动失败，请查看异常信息');
+    } finally {
+      const next = { ...startingKeys.value };
+      delete next[record.key];
+      startingKeys.value = next;
+      stateRef.value = null;
+      reloadTable();
+    }
+  }
+
+  async function handleRestart(record: BotRow) {
+    startingKeys.value = { ...startingKeys.value, [record.key]: true };
+    reloadTable();
+    try {
+      await startBot({ key: record.key });
+      message.success('机器人已重启');
+    } catch (e) {
+      message.error('机器人重启失败，请查看异常信息');
     } finally {
       const next = { ...startingKeys.value };
       delete next[record.key];

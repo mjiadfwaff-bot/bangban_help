@@ -21,36 +21,36 @@ type AddonLazysheepTggoNoteDao struct {
 
 // AddonLazysheepTggoNoteColumns defines and stores column names for the table hg_addon_lazysheep_tggo_note.
 type AddonLazysheepTggoNoteColumns struct {
-	Id               string //
-	BotId            string //
-	BindingId        string //
-	ContentId        string //
-	UpId             string //
-	PairId           string //
-	ReceiverRoomId   string //
-	RoomName         string //
-	Sender           string //
-	SenderDno        string //
-	SenderUser       string //
-	RawPayload       string //
-	NotePayload      string //
-	MessageType      string //
-	Code             string //
-	Title            string //
-	TextContent      string //
-	WorkflowStatus   string //
-	ReviewMessageId  string //
-	PublishMessageId string //
-	ApprovedBy       string //
-	PublishedBy      string //
-	ApprovedAt       string //
-	PublishedAt      string //
-	LastError        string //
-	Sort             string //
-	Status           string //
-	CreatedAt        string //
-	UpdatedAt        string //
-	DeletedAt        string //
+	Id               string // 主键
+	BotId            string // 机器人ID
+	BindingId        string // 绑定ID
+	ContentId        string // 内容ID
+	UpId             string // upId
+	PairId           string // pairId
+	ReceiverRoomId   string // 房间ID
+	RoomName         string // 房间名称
+	Sender           string // 发送者
+	SenderDno        string // 发送设备
+	SenderUser       string // 发送用户
+	RawPayload       string // 原始消息
+	NotePayload      string // 笔记内容
+	MessageType      string // 消息类型
+	Code             string // 编号
+	Title            string // 标题
+	TextContent      string // 文本内容
+	WorkflowStatus   string // 流程状态
+	ReviewMessageId  string // 审核消息ID
+	PublishMessageId string // 推送消息ID
+	ApprovedBy       string // 审核人
+	PublishedBy      string // 推送人
+	ApprovedAt       string // 审核时间
+	PublishedAt      string // 推送时间
+	LastError        string // 最后错误
+	Sort             string // 排序
+	Status           string // 状态
+	CreatedAt        string // 创建时间
+	UpdatedAt        string // 更新时间
+	DeletedAt        string // 删除时间
 }
 
 // addonLazysheepTggoNoteColumns holds the columns for the table hg_addon_lazysheep_tggo_note.

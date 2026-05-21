@@ -23,6 +23,9 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err := s.ensureUserBotKey(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureNoteTables(ctx); err != nil {
+		return err
+	}
 	ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_bot")
 	if err != nil {
 		return gerror.Wrap(err, "检查懒羊羊TGGo数据表失败")
@@ -36,6 +39,56 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	}
 	if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
 		return gerror.Wrap(err, "初始化懒羊羊TGGo数据表失败")
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensureNoteTables(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_note"); err != nil || !ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		if _, err := g.DB().Exec(ctx, "DROP INDEX IF EXISTS hg_addon_lazysheep_tggo_note_content_id"); err != nil {
+			return gerror.Wrap(err, "删除旧笔记索引失败")
+		}
+		if _, err := g.DB().Exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_bot_content_id ON hg_addon_lazysheep_tggo_note (bot_id, content_id)"); err != nil {
+			return gerror.Wrap(err, "创建笔记内容索引失败")
+		}
+		if _, err := g.DB().Exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_bot_code ON hg_addon_lazysheep_tggo_note (bot_id, code)"); err != nil {
+			return gerror.Wrap(err, "创建笔记编号索引失败")
+		}
+	case consts.DBMysql, "":
+		if ok, err := mysqlHasIndex(ctx, "hg_addon_lazysheep_tggo_note", "content_id"); err != nil {
+			return gerror.Wrap(err, "检查旧笔记索引失败")
+		} else if ok {
+			if _, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note` DROP INDEX `content_id`"); err != nil {
+				return gerror.Wrap(err, "删除旧笔记索引失败")
+			}
+		}
+		if ok, err := mysqlHasIndex(ctx, "hg_addon_lazysheep_tggo_note", "bot_content_id"); err != nil {
+			return gerror.Wrap(err, "检查笔记内容索引失败")
+		} else if !ok {
+			if _, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note` ADD UNIQUE KEY `bot_content_id` (`bot_id`,`content_id`)"); err != nil {
+				return gerror.Wrap(err, "创建笔记内容索引失败")
+			}
+		}
+		if ok, err := mysqlHasIndex(ctx, "hg_addon_lazysheep_tggo_note", "bot_code"); err != nil {
+			return gerror.Wrap(err, "检查笔记编号索引失败")
+		} else if !ok {
+			if _, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note` ADD UNIQUE KEY `bot_code` (`bot_id`,`code`)"); err != nil {
+				return gerror.Wrap(err, "创建笔记编号索引失败")
+			}
+		}
+	default:
+		return nil
+	}
+	sqlPath, err := lazySheepSQLPath(ctx)
+	if err != nil {
+		return err
+	}
+	if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
+		return gerror.Wrap(err, "初始化笔记资源表失败")
 	}
 	return nil
 }

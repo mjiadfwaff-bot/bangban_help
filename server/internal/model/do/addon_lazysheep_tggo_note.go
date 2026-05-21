@@ -13,34 +13,34 @@ import (
 // AddonLazysheepTggoNote is the golang structure of table hg_addon_lazysheep_tggo_note for DAO operations like Where/Data.
 type AddonLazysheepTggoNote struct {
 	g.Meta           `orm:"table:hg_addon_lazysheep_tggo_note, do:true"`
-	Id               any         //
-	BotId            any         //
-	BindingId        any         //
-	ContentId        any         //
-	UpId             any         //
-	PairId           any         //
-	ReceiverRoomId   any         //
-	RoomName         any         //
-	Sender           any         //
-	SenderDno        any         //
-	SenderUser       *gjson.Json //
-	RawPayload       *gjson.Json //
-	NotePayload      *gjson.Json //
-	MessageType      any         //
-	Code             any         //
-	Title            any         //
-	TextContent      any         //
-	WorkflowStatus   any         //
-	ReviewMessageId  any         //
-	PublishMessageId any         //
-	ApprovedBy       any         //
-	PublishedBy      any         //
-	ApprovedAt       *gtime.Time //
-	PublishedAt      *gtime.Time //
-	LastError        any         //
-	Sort             any         //
-	Status           any         //
-	CreatedAt        *gtime.Time //
-	UpdatedAt        *gtime.Time //
-	DeletedAt        *gtime.Time //
+	Id               any         // 主键
+	BotId            any         // 机器人ID
+	BindingId        any         // 绑定ID
+	ContentId        any         // 内容ID
+	UpId             any         // upId
+	PairId           any         // pairId
+	ReceiverRoomId   any         // 房间ID
+	RoomName         any         // 房间名称
+	Sender           any         // 发送者
+	SenderDno        any         // 发送设备
+	SenderUser       *gjson.Json // 发送用户
+	RawPayload       *gjson.Json // 原始消息
+	NotePayload      *gjson.Json // 笔记内容
+	MessageType      any         // 消息类型
+	Code             any         // 编号
+	Title            any         // 标题
+	TextContent      any         // 文本内容
+	WorkflowStatus   any         // 流程状态
+	ReviewMessageId  any         // 审核消息ID
+	PublishMessageId any         // 推送消息ID
+	ApprovedBy       any         // 审核人
+	PublishedBy      any         // 推送人
+	ApprovedAt       *gtime.Time // 审核时间
+	PublishedAt      *gtime.Time // 推送时间
+	LastError        any         // 最后错误
+	Sort             any         // 排序
+	Status           any         // 状态
+	CreatedAt        *gtime.Time // 创建时间
+	UpdatedAt        *gtime.Time // 更新时间
+	DeletedAt        *gtime.Time // 删除时间
 }

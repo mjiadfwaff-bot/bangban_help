@@ -27,9 +27,11 @@ type (
 		UpdateBotUser(ctx context.Context, in *sysin.BotUserEditInp) error
 		TestTelegramProxy(ctx context.Context, in *sysin.TelegramProxyTestInp) (res *sysin.TelegramProxyTestModel, err error)
 		TouchUser(ctx context.Context, in *sysin.TouchUserInp) error
+		IsBotAdmin(ctx context.Context, botKey string, telegramID int64) (bool, error)
 		UpsertBot(ctx context.Context, in *sysin.BotUpsertInp) (key string, err error)
 		BindSource(ctx context.Context, in *sysin.BindSourceInp) error
 		PullNow(ctx context.Context, in *sysin.PullInp) (message string, err error)
+		SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error)
 		SignIn(ctx context.Context, in *sysin.SignInInp) (message string, err error)
 		StoreNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error)
 
