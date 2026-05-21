@@ -113,10 +113,17 @@ type PullOption struct {
 	URL      string
 	Limit    int
 	MaxPages int
+	PageSize int
 }
 
 type PullResult struct {
 	PairID   string
+	Messages []json.RawMessage
+}
+
+type PullPage struct {
+	PairID   string
+	Page     int
 	Messages []json.RawMessage
 }
 
@@ -138,6 +145,26 @@ func Pull(ctx context.Context, opt PullOption) (*PullResult, error) {
 		return nil, err
 	}
 	return &PullResult{PairID: session.PairID, Messages: messages}, nil
+}
+
+func PullPages(ctx context.Context, opt PullOption, handle func(*PullPage) error) (pairID string, err error) {
+	if handle == nil {
+		return "", errors.New("pull page handler is nil")
+	}
+	session, err := OpenSession(ctx, opt.URL)
+	if err != nil {
+		return "", err
+	}
+	if err = session.Client.CollectMessagePages(ctx, session.PairID, opt.Limit, opt.MaxPages, opt.PageSize, func(page int, messages []json.RawMessage) error {
+		return handle(&PullPage{
+			PairID:   session.PairID,
+			Page:     page,
+			Messages: messages,
+		})
+	}); err != nil {
+		return "", err
+	}
+	return session.PairID, nil
 }
 
 func OpenSession(ctx context.Context, sourceURL string) (*Session, error) {
@@ -293,24 +320,47 @@ func (c *Client) RegisterByToken(ctx context.Context, token string) (pairID stri
 
 func (c *Client) CollectMessages(ctx context.Context, pairID string, limit int, maxPages int) ([]json.RawMessage, error) {
 	all := make([]json.RawMessage, 0, limit)
+	if err := c.CollectMessagePages(ctx, pairID, limit, maxPages, 0, func(_ int, messages []json.RawMessage) error {
+		all = append(all, messages...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+func (c *Client) CollectMessagePages(ctx context.Context, pairID string, limit int, maxPages int, pageSize int, handle func(page int, messages []json.RawMessage) error) error {
+	if handle == nil {
+		return errors.New("message page handler is nil")
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if limit > 0 && limit < pageSize {
+		pageSize = limit
+	}
 	seen := make(map[string]struct{})
+	collected := 0
 	maxID := int64(0)
 	for page := 1; ; page++ {
 		if maxPages > 0 && page > maxPages {
 			break
 		}
-		remaining := limit - len(all)
-		if remaining <= 0 {
+		if limit > 0 && collected >= limit {
 			break
+		}
+		pageLimit := pageSize
+		if limit > 0 && limit-collected < pageLimit {
+			pageLimit = limit - collected
 		}
 		pageResp, err := c.signedPost(ctx, "/v1.Message/List", map[string]any{
 			"pair_id":       pairID,
 			"max_id":        maxID,
 			"include_quote": true,
-			"pager":         map[string]any{"limit": remaining},
+			"pager":         map[string]any{"limit": pageLimit},
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 		var parsed struct {
 			Code    int               `json:"code"`
@@ -321,18 +371,19 @@ func (c *Client) CollectMessages(ctx context.Context, pairID string, limit int, 
 			} `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(pageResp), &parsed); err != nil {
-			return nil, fmt.Errorf("parse message page failed: %w: %s", err, pageResp)
+			return fmt.Errorf("parse message page failed: %w: %s", err, pageResp)
 		}
 		list := parsed.List
 		if len(list) == 0 && len(parsed.Data.List) > 0 {
 			list = parsed.Data.List
 		}
 		if parsed.Code != 0 && len(list) == 0 {
-			return nil, fmt.Errorf("message list failed: %s", parsed.Message)
+			return fmt.Errorf("message list failed: %s", parsed.Message)
 		}
 		if len(list) == 0 {
 			break
 		}
+		pageMessages := make([]json.RawMessage, 0, len(list))
 		for _, raw := range list {
 			id := rawMessageID(raw)
 			if id == "" {
@@ -342,19 +393,25 @@ func (c *Client) CollectMessages(ctx context.Context, pairID string, limit int, 
 				continue
 			}
 			seen[id] = struct{}{}
-			all = append(all, raw)
-			if len(all) >= limit {
+			pageMessages = append(pageMessages, raw)
+			collected++
+			if limit > 0 && collected >= limit {
 				break
+			}
+		}
+		if len(pageMessages) > 0 {
+			if err := handle(page, pageMessages); err != nil {
+				return err
 			}
 		}
 		oldestID := rawMessageID(list[len(list)-1])
 		nextID := parseInt64(oldestID)
-		if nextID == 0 || nextID == maxID || len(list) < remaining || len(all) >= limit {
+		if nextID == 0 || nextID == maxID || len(list) < pageLimit || (limit > 0 && collected >= limit) {
 			break
 		}
 		maxID = nextID
 	}
-	return all, nil
+	return nil
 }
 
 func getPublicKey(ctx context.Context) (string, error) {

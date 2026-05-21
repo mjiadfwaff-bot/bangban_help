@@ -219,29 +219,43 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	}()
 
 	limit := in.Limit
-	if limit <= 0 {
-		limit = 50
-	}
 	if err = s.configureBangchatProxy(ctx); err != nil {
 		return "", err
 	}
 	g.Log().Debugf(ctx, "开始 BangChat 采集 botKey:%s binding:%s source:%s limit:%d autoPush:%t", in.BotKey, binding.Key, binding.SourceURL, limit, binding.AutoPush)
-	result, err := bangchat.Pull(ctx, bangchat.PullOption{URL: binding.SourceURL, Limit: limit, MaxPages: 0})
-	if err != nil {
-		return "", gerror.Wrap(err, "采集 BangChat 消息失败")
-	}
-	summary := &pullSummary{Fetched: len(result.Messages), PairID: result.PairID}
-	g.Log().Debugf(ctx, "BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d", in.BotKey, binding.Key, result.PairID, len(result.Messages))
-	shared.ReportPullProgress(ctx, fmt.Sprintf("已拉取 %d 条，开始处理...", len(result.Messages)))
-	maxContentID, latestCursor := pullCursorFromMessages(result.Messages)
-	batchSeen := make(map[string]struct{}, len(result.Messages))
+	summary := &pullSummary{}
+	maxContentID := binding.LastPullID
+	latestCursor := binding.LastCursor
+	batchSeen := make(map[string]struct{})
+	processed := 0
 	if binding.AutoPush {
 		rt := s.runtime.get(in.BotKey)
 		if rt == nil || rt.client == nil {
 			return "", gerror.New("机器人运行实例不存在，请先启动机器人")
 		}
-		for idx, raw := range result.Messages {
-			shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", idx+1, len(result.Messages)))
+	}
+	pairID, err := bangchat.PullPages(ctx, bangchat.PullOption{URL: binding.SourceURL, Limit: limit, MaxPages: 0, PageSize: 50}, func(page *bangchat.PullPage) error {
+		if page == nil {
+			return nil
+		}
+		if summary.PairID == "" {
+			summary.PairID = page.PairID
+		}
+		summary.Fetched += len(page.Messages)
+		pageMaxContentID, pageLatestCursor := pullCursorFromMessages(page.Messages)
+		if pageMaxContentID > maxContentID {
+			maxContentID = pageMaxContentID
+			latestCursor = pageLatestCursor
+		}
+		g.Log().Debugf(ctx, "BangChat 采集页完成 botKey:%s binding:%s pair:%s page:%d fetched:%d total:%d", in.BotKey, binding.Key, page.PairID, page.Page, len(page.Messages), summary.Fetched)
+		shared.ReportPullProgress(ctx, fmt.Sprintf("已拉取第 %d 页 %d 条，开始处理...", page.Page, len(page.Messages)))
+		for idx, raw := range page.Messages {
+			processed++
+			if limit > 0 {
+				shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", processed, limit))
+			} else {
+				shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d 页第 %d 条，累计 %d 条...", page.Page, idx+1, processed))
+			}
 			if !isBangchatNote(raw) {
 				summary.Skipped++
 				continue
@@ -252,7 +266,7 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 				g.Log().Warningf(ctx, "解析快速采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				continue
 			}
-			g.Log().Debugf(ctx, "快速采集处理笔记 botKey:%s binding:%s index:%d contentID:%s", in.BotKey, binding.Key, idx+1, msg.ContentId)
+			g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s page:%d index:%d contentID:%s autoPush:%t", in.BotKey, binding.Key, page.Page, idx+1, msg.ContentId, binding.AutoPush)
 			contentID := parseInt(msg.ContentId)
 			if binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
 				summary.Skipped++
@@ -272,96 +286,61 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 				}
 				seen, seenErr := pullDedupSeen(ctx, in.BotKey, fingerprint)
 				if seenErr != nil {
-					return "", seenErr
+					return seenErr
 				}
 				if seen {
 					summary.Deduped++
 					continue
 				}
 			}
-			if pushErr := s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID); pushErr != nil {
-				summary.Failed++
-				g.Log().Warningf(ctx, "快速推送 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, pushErr)
+			if binding.AutoPush {
+				if pushErr := s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID); pushErr != nil {
+					summary.Failed++
+					g.Log().Warningf(ctx, "快速推送 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, pushErr)
+					continue
+				}
+				summary.QuickPushed++
+				if fingerprint != "" {
+					batchSeen[fingerprint] = struct{}{}
+					if err := pullDedupRemember(ctx, in.BotKey, fingerprint, 0, sourceURLs); err != nil {
+						g.Log().Warningf(ctx, "记录快速采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+					}
+				}
 				continue
 			}
-			summary.QuickPushed++
+			stored, storeErr := s.StoreNote(ctx, &lsysin.NoteStoreInp{
+				BotKey:     in.BotKey,
+				BindingKey: binding.Key,
+				Payload:    string(raw),
+			})
+			if storeErr != nil {
+				summary.Failed++
+				g.Log().Warningf(ctx, "保存 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, storeErr)
+				continue
+			}
+			summary.Stored++
 			if fingerprint != "" {
 				batchSeen[fingerprint] = struct{}{}
-				if err := pullDedupRemember(ctx, in.BotKey, fingerprint, 0, sourceURLs); err != nil {
-					g.Log().Warningf(ctx, "记录快速采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				if err := pullDedupRemember(ctx, in.BotKey, fingerprint, stored.NoteId, sourceURLs); err != nil {
+					g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				}
 			}
-		}
-		if maxContentID > binding.LastPullID {
-			if err := s.updateBindingPullState(ctx, binding.Key, maxContentID, latestCursor); err != nil {
-				g.Log().Warningf(ctx, "更新快速采集游标失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+			if pushErr := s.pushCollectedNote(ctx, in.BotKey, binding, stored.NoteId, in.ChatID); pushErr != nil {
+				summary.PushFailed++
+				g.Log().Warningf(ctx, "推送采集笔记失败 botKey:%s noteId:%d err:%+v", in.BotKey, stored.NoteId, pushErr)
+			} else {
+				summary.Pushed++
 			}
 		}
-		return summary.Message(), nil
+		return nil
+	})
+	if err != nil {
+		return "", gerror.Wrap(err, "采集 BangChat 消息失败")
 	}
-	for idx, raw := range result.Messages {
-		shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", idx+1, len(result.Messages)))
-		if !isBangchatNote(raw) {
-			summary.Skipped++
-			continue
-		}
-		var msg sourceMessage
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			summary.Failed++
-			g.Log().Warningf(ctx, "解析采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
-			continue
-		}
-		g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s index:%d contentID:%s", in.BotKey, binding.Key, idx+1, msg.ContentId)
-		contentID := parseInt(msg.ContentId)
-		if binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
-			summary.Skipped++
-			continue
-		}
-		var note noteContent
-		if err := json.Unmarshal([]byte(msg.Content), &note); err != nil {
-			summary.Failed++
-			g.Log().Warningf(ctx, "解析采集笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
-			continue
-		}
-		fingerprint, sourceURLs := noteFingerprint(note)
-		if fingerprint != "" {
-			if _, ok := batchSeen[fingerprint]; ok {
-				summary.Deduped++
-				continue
-			}
-			seen, seenErr := pullDedupSeen(ctx, in.BotKey, fingerprint)
-			if seenErr != nil {
-				return "", seenErr
-			}
-			if seen {
-				summary.Deduped++
-				continue
-			}
-		}
-		stored, storeErr := s.StoreNote(ctx, &lsysin.NoteStoreInp{
-			BotKey:     in.BotKey,
-			BindingKey: binding.Key,
-			Payload:    string(raw),
-		})
-		if storeErr != nil {
-			summary.Failed++
-			g.Log().Warningf(ctx, "保存 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, storeErr)
-			continue
-		}
-		summary.Stored++
-		if fingerprint != "" {
-			batchSeen[fingerprint] = struct{}{}
-			if err := pullDedupRemember(ctx, in.BotKey, fingerprint, stored.NoteId, sourceURLs); err != nil {
-				g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
-			}
-		}
-		if pushErr := s.pushCollectedNote(ctx, in.BotKey, binding, stored.NoteId, in.ChatID); pushErr != nil {
-			summary.PushFailed++
-			g.Log().Warningf(ctx, "推送采集笔记失败 botKey:%s noteId:%d err:%+v", in.BotKey, stored.NoteId, pushErr)
-		} else {
-			summary.Pushed++
-		}
+	if summary.PairID == "" {
+		summary.PairID = pairID
 	}
+	g.Log().Debugf(ctx, "BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d", in.BotKey, binding.Key, summary.PairID, summary.Fetched)
 	if maxContentID > binding.LastPullID {
 		if err := s.updateBindingPullState(ctx, binding.Key, maxContentID, latestCursor); err != nil {
 			g.Log().Warningf(ctx, "更新采集游标失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
