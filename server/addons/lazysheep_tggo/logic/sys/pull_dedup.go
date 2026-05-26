@@ -6,23 +6,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
+	"hotgo/addons/lazysheep_tggo/model"
 	"hotgo/internal/library/cache"
 )
 
 const pullDedupTTL = time.Hour * 24 * 180
 
-type noteFingerprintItem struct {
-	Type        string `json:"type"`
-	Title       string `json:"title"`
-	SubTitle    string `json:"subTitle"`
-	Content     string `json:"content"`
-	Duration    int    `json:"duration"`
-	VerifyVideo bool   `json:"verifyVideo"`
-	AspectRatio string `json:"aspectRatio"`
+type noteMediaFingerprint struct {
+	Kind string   `json:"kind"`
+	URLs []string `json:"urls"`
 }
 
 type pullDedupRecord struct {
@@ -33,47 +30,58 @@ type pullDedupRecord struct {
 }
 
 func noteFingerprint(note noteContent) (string, []string) {
-	items := make([]noteFingerprintItem, 0, len(note.Items))
 	sourceURLs := make([]string, 0, len(note.Items))
+	mediaURLs := make([]string, 0, len(note.Items))
 	for _, item := range note.Items {
-		items = append(items, noteFingerprintItem{
-			Type:        strings.TrimSpace(item.Type),
-			Title:       strings.TrimSpace(item.Title),
-			SubTitle:    strings.TrimSpace(item.SubTitle),
-			Content:     strings.TrimSpace(item.Content),
-			Duration:    item.Duration,
-			VerifyVideo: item.VerifyVideo,
-			AspectRatio: fmt.Sprintf("%.4f", item.AspectRatio),
-		})
 		if isRemoteMedia(item.Type) && strings.TrimSpace(item.Content) != "" {
-			sourceURLs = append(sourceURLs, strings.TrimSpace(item.Content))
+			rawURL := strings.TrimSpace(item.Content)
+			sourceURLs = append(sourceURLs, rawURL)
+			mediaURLs = append(mediaURLs, normalizeDedupMediaURL(rawURL))
 		}
 	}
-	if len(items) == 0 {
-		return "", sourceURLs
+	mediaURLs = sortedNonEmptyStrings(mediaURLs)
+	if len(mediaURLs) > 0 {
+		raw, _ := json.Marshal(noteMediaFingerprint{Kind: "media", URLs: mediaURLs})
+		sum := sha256.Sum256(raw)
+		return hex.EncodeToString(sum[:]), sourceURLs
 	}
-	raw, _ := json.Marshal(items)
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), sourceURLs
+	return "", sourceURLs
 }
 
-func pullDedupKey(botKey, fingerprint string) string {
-	return fmt.Sprintf("lazysheep_tggo:pull:dedup:%s:%s", strings.TrimSpace(botKey), strings.TrimSpace(fingerprint))
+func normalizeDedupMediaURL(rawURL string) string {
+	return strings.TrimSpace(rawURL)
 }
 
-func pullDedupSeen(ctx context.Context, botKey, fingerprint string) (bool, error) {
-	if strings.TrimSpace(botKey) == "" || strings.TrimSpace(fingerprint) == "" {
+func sortedNonEmptyStrings(items []string) []string {
+	sort.Strings(items)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func pullDedupKey(scope, fingerprint string) string {
+	return fmt.Sprintf("lazysheep_tggo:pull:dedup:%s:%s", strings.TrimSpace(scope), strings.TrimSpace(fingerprint))
+}
+
+func pullDedupSeen(ctx context.Context, scope, fingerprint string) (bool, error) {
+	if strings.TrimSpace(scope) == "" || strings.TrimSpace(fingerprint) == "" {
 		return false, nil
 	}
-	val, err := cache.Instance().Get(ctx, pullDedupKey(botKey, fingerprint))
+	val, err := cache.Instance().Get(ctx, pullDedupKey(scope, fingerprint))
 	if err != nil {
 		return false, gerror.Wrap(err, "查询重复采集记录失败")
 	}
 	return !val.IsNil() && val.String() != "", nil
 }
 
-func pullDedupRemember(ctx context.Context, botKey, fingerprint string, noteID int64, sourceURLs []string) error {
-	if strings.TrimSpace(botKey) == "" || strings.TrimSpace(fingerprint) == "" {
+func pullDedupRemember(ctx context.Context, scope, fingerprint string, noteID int64, sourceURLs []string) error {
+	if strings.TrimSpace(scope) == "" || strings.TrimSpace(fingerprint) == "" {
 		return nil
 	}
 	payload, err := json.Marshal(pullDedupRecord{
@@ -85,10 +93,51 @@ func pullDedupRemember(ctx context.Context, botKey, fingerprint string, noteID i
 	if err != nil {
 		return gerror.Wrap(err, "编码重复采集记录失败")
 	}
-	if err := cache.Instance().Set(ctx, pullDedupKey(botKey, fingerprint), string(payload), pullDedupTTL); err != nil {
+	if err := cache.Instance().Set(ctx, pullDedupKey(scope, fingerprint), string(payload), pullDedupTTL); err != nil {
 		return gerror.Wrap(err, "保存重复采集记录失败")
 	}
 	return nil
+}
+
+func clearPullDedupScope(ctx context.Context, scope string) error {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return nil
+	}
+	keys, err := cache.Instance().Keys(ctx)
+	if err != nil {
+		return gerror.Wrap(err, "列出重复采集缓存失败")
+	}
+	prefix := pullDedupKey(scope, "")
+	removeKeys := make([]interface{}, 0)
+	for _, key := range keys {
+		text := strings.TrimSpace(fmt.Sprint(key))
+		if strings.HasPrefix(text, prefix) {
+			removeKeys = append(removeKeys, key)
+		}
+	}
+	if len(removeKeys) == 0 {
+		return nil
+	}
+	_, err = cache.Instance().Remove(ctx, removeKeys...)
+	if err != nil {
+		return gerror.Wrap(err, "删除重复采集缓存失败")
+	}
+	return nil
+}
+
+func pullDedupScope(botKey string, binding *model.BindingRecord, chatID int64) string {
+	targetChatID := chatID
+	if targetChatID == 0 && binding != nil {
+		if binding.AutoPush && binding.PublishChatID != 0 {
+			targetChatID = binding.PublishChatID
+		} else if binding.ReviewChatID != 0 {
+			targetChatID = binding.ReviewChatID
+		} else {
+			targetChatID = binding.PublishChatID
+		}
+	}
+	return fmt.Sprintf("%s:%d", strings.TrimSpace(botKey), targetChatID)
 }
 
 func pullCursorFromMessages(messages []json.RawMessage) (int64, string) {

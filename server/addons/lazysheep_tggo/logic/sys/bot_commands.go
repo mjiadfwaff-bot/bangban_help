@@ -38,6 +38,9 @@ func pluginBotCommands(plugins map[string]*model.PluginConfig) []models.BotComma
 		if plugin == nil || !plugin.Enabled || !plugin.UserEnabled {
 			continue
 		}
+		if plugin.Key == "collector" {
+			continue
+		}
 		if !botSettingBool(plugin.Settings, "menuVisible", true) {
 			continue
 		}
@@ -134,8 +137,14 @@ func normalizeTelegramCommandName(command string) string {
 		name = "pull"
 	case "签到":
 		name = "sign"
+	case "积分":
+		name = "points"
 	case "会员":
 		name = "member"
+	case "个人中心":
+		name = "profile"
+	case "帮助":
+		name = "help"
 	case "审核":
 		name = "review"
 	}
@@ -186,9 +195,15 @@ func telegramTextAliases(key string) []string {
 	case "bind_publish":
 		return []string{"/bind_publish", "/绑定发布", "绑定发布"}
 	case "pull":
-		return []string{"/pull", "/拉取", "拉取"}
+		return []string{"/pull", "pull", "/拉取", "拉取"}
 	case "sign":
 		return []string{"/sign", "/签到", "签到"}
+	case "points":
+		return []string{"/points", "/积分", "积分"}
+	case "profile":
+		return []string{"/profile", "/个人中心", "个人中心"}
+	case "help":
+		return []string{"/help", "/帮助", "帮助"}
 	default:
 		return nil
 	}

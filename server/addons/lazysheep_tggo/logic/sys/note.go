@@ -13,15 +13,12 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/encoding/gjson"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/gogf/gf/v2/text/gstr"
-	"github.com/gogf/gf/v2/util/grand"
 	"hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/internal/dao"
 	"hotgo/internal/library/storager"
@@ -68,6 +65,7 @@ type noteItem struct {
 	Duration    int     `json:"duration"`
 	VerifyVideo bool    `json:"verifyVideo"`
 	AspectRatio float64 `json:"aspectRatio"`
+	TgFileID    string  `json:"tgFileId"`
 }
 
 func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error) {
@@ -272,23 +270,28 @@ func (s *sLazySheepTGGo) resolveBindingID(ctx context.Context, bindingKey string
 }
 
 func transferRemoteMedia(ctx context.Context, itemType, rawURL string) (*isysin.AttachmentListModel, error) {
-	if !gstr.HasPrefix(rawURL, "http://") && !gstr.HasPrefix(rawURL, "https://") {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		return nil, gerror.New("仅支持 HTTP/HTTPS 媒体链接")
 	}
-	resp, err := g.Client().SetTimeout(time.Second*60).Get(ctx, rawURL)
+	if attachment, err := cachedAttachmentBySourceURL(ctx, rawURL); err != nil {
+		return nil, err
+	} else if attachment != nil {
+		g.Log().Debugf(ctx, "命中 BangChat 媒体附件缓存 url:%s attachmentId:%d", rawURL, attachment.Id)
+		return attachment, nil
+	}
+	filename, content, contentType, err := downloadCachedMedia(ctx, rawURL, itemType, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Close()
-	if resp.StatusCode != 200 {
-		return nil, gerror.Newf("请求媒体失败, StatusCode:%v", resp.StatusCode)
-	}
-	content := resp.ReadAll()
 	if len(content) == 0 {
 		return nil, gerror.New("媒体内容为空")
 	}
-	kind, ext := mediaKindAndExt(itemType, rawURL, resp.Header.Get("Content-Type"))
-	fileHeader, err := file.NewMultipartFileHeader("lazy-"+grand.Letters(8)+ext, content)
+	kind, ext := mediaKindAndExt(itemType, rawURL, contentType)
+	name := strings.TrimSpace(filename)
+	if name == "" || path.Ext(name) == "" {
+		name = "lazy-" + shortHash(rawURL) + ext
+	}
+	fileHeader, err := file.NewMultipartFileHeader(name, content)
 	if err != nil {
 		return nil, gerror.Newf("创建文件头失败：%v", err)
 	}

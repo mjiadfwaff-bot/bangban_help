@@ -1,6 +1,7 @@
 CREATE TABLE `hg_addon_lazysheep_tggo_bot` (
   `id` INTEGER NOT NULL,
   `bot_key` TEXT NOT NULL DEFAULT '',
+  `role` TEXT NOT NULL DEFAULT 'user',
   `member_id` INTEGER DEFAULT 0,
   `token` TEXT NOT NULL DEFAULT '',
   `bot_name` TEXT DEFAULT '',
@@ -44,6 +45,7 @@ CREATE TABLE `hg_addon_lazysheep_tggo_binding` (
   `publish_enabled` INTEGER DEFAULT 1,
   `verify_enabled` INTEGER DEFAULT 1,
   `location_enabled` INTEGER DEFAULT 1,
+  `plugin_settings` TEXT DEFAULT '',
   `last_pull_id` INTEGER DEFAULT 0,
   `last_cursor` TEXT DEFAULT '',
   `status` INTEGER DEFAULT 1,

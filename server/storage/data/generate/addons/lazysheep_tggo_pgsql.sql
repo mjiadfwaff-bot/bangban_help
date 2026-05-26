@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_bot (
   id bigserial PRIMARY KEY,
   bot_key varchar(64) NOT NULL DEFAULT '',
+  role varchar(32) NOT NULL DEFAULT 'user',
   member_id bigint DEFAULT 0,
   token varchar(255) NOT NULL DEFAULT '',
   bot_name varchar(128) DEFAULT '',
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_binding (
   publish_enabled smallint DEFAULT 1,
   verify_enabled smallint DEFAULT 1,
   location_enabled smallint DEFAULT 1,
+  plugin_settings text DEFAULT '',
   last_pull_id bigint DEFAULT 0,
   last_cursor varchar(255) DEFAULT '',
   status smallint DEFAULT 1,

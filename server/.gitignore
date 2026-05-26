@@ -21,6 +21,7 @@ resource/public/admin/
 resource/public/attachment/
 storage/cache/
 storage/diskqueue/
+storage/lazysheep_tggo/
 storage/cert/ssl/server.crt
 storage/cert/ssl/server.key
 storage/cert/pay/alipay/

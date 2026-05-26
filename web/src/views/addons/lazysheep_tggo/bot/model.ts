@@ -2,6 +2,7 @@ import { h } from 'vue';
 import { NTag, NTooltip } from 'naive-ui';
 
 export interface BotRow {
+  id?: number;
   key: string;
   token: string;
   displayName: string;
@@ -22,6 +23,7 @@ export interface BotRow {
 }
 
 export function newBotRow(row?: Partial<BotRow>): BotRow {
+  const role = row?.role === 'finance' ? 'official' : row?.role || 'user';
   return {
     key: '',
     token: '',
@@ -34,9 +36,8 @@ export function newBotRow(row?: Partial<BotRow>): BotRow {
     enabled: true,
     autoPull: false,
     autoForward: false,
-    reviewEnabled: true,
-    role: 'user',
     ...row,
+    role,
   };
 }
 
@@ -59,8 +60,8 @@ export const rules = {
 };
 
 export const roleOptions = [
+  { label: '官方机器人', value: 'official' },
   { label: '用户机器人', value: 'user' },
-  { label: '资金主机器人', value: 'finance' },
 ];
 
 export const columns = [
@@ -68,6 +69,9 @@ export const columns = [
     title: '机器人标识',
     key: 'key',
     width: 150,
+    render(row: BotRow) {
+      return row.key || (row.id ? `ID:${row.id}` : '-');
+    },
   },
   {
     title: '机器人名称',
@@ -78,14 +82,19 @@ export const columns = [
     title: '用户名',
     key: 'username',
     width: 180,
+    render(row: BotRow) {
+      const username = (row.username || '').replace(/^@+/, '');
+      return username ? `@${username}` : '-';
+    },
   },
   {
     title: '权限',
     key: 'role',
     width: 120,
     render(row: BotRow) {
-      const type = row.role === 'finance' ? 'warning' : 'success';
-      const label = row.role === 'finance' ? '资金主机器人' : '用户机器人';
+      const isOfficial = row.role === 'official' || row.role === 'finance';
+      const type = isOfficial ? 'warning' : 'success';
+      const label = isOfficial ? '官方机器人' : '用户机器人';
       return h(NTag, { type, bordered: false }, { default: () => label });
     },
   },

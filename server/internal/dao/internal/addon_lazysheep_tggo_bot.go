@@ -23,6 +23,7 @@ type AddonLazysheepTggoBotDao struct {
 type AddonLazysheepTggoBotColumns struct {
 	Id            string // 主键
 	BotKey        string // 机器人标识
+	Role          string // 机器人角色
 	MemberId      string // 所属后台用户
 	Token         string // Telegram Bot Token
 	BotName       string // 机器人名称
@@ -53,6 +54,7 @@ type AddonLazysheepTggoBotColumns struct {
 var addonLazysheepTggoBotColumns = AddonLazysheepTggoBotColumns{
 	Id:            "id",
 	BotKey:        "bot_key",
+	Role:          "role",
 	MemberId:      "member_id",
 	Token:         "token",
 	BotName:       "bot_name",

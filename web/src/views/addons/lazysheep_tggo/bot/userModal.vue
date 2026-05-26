@@ -4,7 +4,7 @@
     :show-icon="false"
     preset="dialog"
     :title="`${botKey} 用户管理`"
-    :style="{ width: '980px' }"
+    :style="{ width: '1180px' }"
   >
     <n-space vertical>
       <n-space>
@@ -32,7 +32,8 @@
 
 <script lang="ts" setup>
   import { h, reactive, ref } from 'vue';
-  import { NButton, NInputNumber, NSelect, useMessage } from 'naive-ui';
+  import { format } from 'date-fns';
+  import { NButton, NDatePicker, NInputNumber, NSelect, useMessage } from 'naive-ui';
   import { botUsers, updateBotUser } from '@/api/addons/lazysheep_tggo/config';
 
   const message = useMessage();
@@ -96,6 +97,22 @@
       },
     },
     {
+      title: '到期时间',
+      key: 'memberExpireAt',
+      width: 210,
+      render(row) {
+        return h(NDatePicker, {
+          type: 'datetime',
+          clearable: true,
+          value: parseDateValue(row.memberExpireAt),
+          format: 'yyyy-MM-dd HH:mm:ss',
+          onUpdateValue: (value) => {
+            row.memberExpireAt = value ? format(new Date(value), 'yyyy-MM-dd HH:mm:ss') : '';
+          },
+        });
+      },
+    },
+    {
       title: '状态',
       key: 'status',
       width: 120,
@@ -146,10 +163,19 @@
       id: row.id,
       memberLevel: row.memberLevel,
       points: row.points,
+      memberExpireAt: row.memberExpireAt || '',
       status: row.status,
     });
     message.success('保存成功');
     load();
+  }
+
+  function parseDateValue(value?: string) {
+    if (!value) {
+      return null;
+    }
+    const timestamp = Date.parse(value.replace(' ', 'T'));
+    return Number.isNaN(timestamp) ? null : timestamp;
   }
 
   defineExpose({ openModal });

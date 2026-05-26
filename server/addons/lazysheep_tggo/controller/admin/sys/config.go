@@ -8,6 +8,7 @@ package sys
 import (
 	"context"
 	"hotgo/addons/lazysheep_tggo/api/admin/config"
+	"hotgo/addons/lazysheep_tggo/model"
 	"hotgo/addons/lazysheep_tggo/service"
 )
 
@@ -30,6 +31,33 @@ func (c *cConfig) UpdateConfig(ctx context.Context, req *config.UpdateReq) (res 
 		return
 	}
 	res = new(config.UpdateRes)
+	return
+}
+
+func (c *cConfig) UpsertBot(ctx context.Context, req *config.UpsertBotReq) (res *config.UpsertBotRes, err error) {
+	key, err := service.SysLazysheepTggo().UpsertBot(ctx, &req.BotUpsertInp)
+	if err != nil {
+		return
+	}
+	res = &config.UpsertBotRes{Key: key}
+	return
+}
+
+func (c *cConfig) Bots(ctx context.Context, req *config.BotsReq) (res *config.BotsRes, err error) {
+	state, err := service.SysLazysheepTggo().GetState(ctx)
+	if err != nil {
+		return
+	}
+	bots := make(map[string]*model.BotConfig, len(state.Bots))
+	for key, item := range state.Bots {
+		if item == nil {
+			continue
+		}
+		next := *item
+		next.Plugins = nil
+		bots[key] = &next
+	}
+	res = &config.BotsRes{Bots: bots}
 	return
 }
 
@@ -84,5 +112,71 @@ func (c *cConfig) TestTelegramProxy(ctx context.Context, req *config.TestTelegra
 		return
 	}
 	res = &config.TestTelegramProxyRes{TelegramProxyTestModel: data}
+	return
+}
+
+func (c *cConfig) PullMonitor(ctx context.Context, req *config.PullMonitorReq) (res *config.PullMonitorRes, err error) {
+	data, err := service.SysLazysheepTggo().PullMonitor(ctx, &req.PullMonitorInp)
+	if err != nil {
+		return
+	}
+	res = &config.PullMonitorRes{PullMonitorModel: data}
+	return
+}
+
+func (c *cConfig) PullMonitorOverview(ctx context.Context, req *config.PullMonitorOverviewReq) (res *config.PullMonitorOverviewRes, err error) {
+	req.PullMonitorInp.Section = "overview"
+	data, err := service.SysLazysheepTggo().PullMonitor(ctx, &req.PullMonitorInp)
+	if err != nil {
+		return
+	}
+	res = &config.PullMonitorOverviewRes{PullMonitorModel: data}
+	return
+}
+
+func (c *cConfig) PullMonitorBindings(ctx context.Context, req *config.PullMonitorBindingsReq) (res *config.PullMonitorBindingsRes, err error) {
+	req.PullMonitorInp.Section = "bindings"
+	data, err := service.SysLazysheepTggo().PullMonitor(ctx, &req.PullMonitorInp)
+	if err != nil {
+		return
+	}
+	res = &config.PullMonitorBindingsRes{PullMonitorModel: data}
+	return
+}
+
+func (c *cConfig) PullMonitorRecent(ctx context.Context, req *config.PullMonitorRecentReq) (res *config.PullMonitorRecentRes, err error) {
+	req.PullMonitorInp.Section = "recent"
+	data, err := service.SysLazysheepTggo().PullMonitor(ctx, &req.PullMonitorInp)
+	if err != nil {
+		return
+	}
+	res = &config.PullMonitorRecentRes{PullMonitorModel: data}
+	return
+}
+
+func (c *cConfig) PushQueueMonitor(ctx context.Context, req *config.PushQueueMonitorReq) (res *config.PushQueueMonitorRes, err error) {
+	data, err := service.SysLazysheepTggo().PushQueueMonitor(ctx, &req.PushQueueMonitorInp)
+	if err != nil {
+		return
+	}
+	res = &config.PushQueueMonitorRes{PushQueueMonitorModel: data}
+	return
+}
+
+func (c *cConfig) PushQueueControl(ctx context.Context, req *config.PushQueueControlReq) (res *config.PushQueueControlRes, err error) {
+	err = service.SysLazysheepTggo().UpdatePushQueueControl(ctx, &req.PushQueueControlInp)
+	if err != nil {
+		return
+	}
+	res = new(config.PushQueueControlRes)
+	return
+}
+
+func (c *cConfig) BindingAutoPullControl(ctx context.Context, req *config.BindingAutoPullControlReq) (res *config.BindingAutoPullControlRes, err error) {
+	err = service.SysLazysheepTggo().UpdateBindingAutoPull(ctx, &req.BindingAutoPullControlInp)
+	if err != nil {
+		return
+	}
+	res = new(config.BindingAutoPullControlRes)
 	return
 }

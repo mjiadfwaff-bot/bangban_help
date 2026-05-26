@@ -31,7 +31,7 @@
   import { NButton, NDropdown, NSpace, useDialog, useMessage } from 'naive-ui';
   import { PlusOutlined } from '@vicons/antd';
   import { BasicTable } from '@/components/Table';
-  import { deleteBot, getConfig, startBot, updateConfig } from '@/api/addons/lazysheep_tggo/config';
+  import { bots, deleteBot, getConfig, startBot, updateConfig, upsertBot } from '@/api/addons/lazysheep_tggo/config';
   import { BotRow, columns } from './model';
   import Edit from './edit.vue';
   import PluginModal from './pluginModal.vue';
@@ -116,18 +116,21 @@
   });
 
   async function loadDataTable() {
-    const res = await getConfig({ group: 'bot' });
-    const state = normalizeState(res?.list?.state);
-    stateRef.value = state;
+    const res = await bots();
+    const botMap = res?.bots || {};
     return {
-      list: Object.keys(state.bots).map((key) => ({
-        key,
-        ...state.bots[key],
-        starting: !!startingKeys.value[key],
-      })),
+      list: Object.keys(botMap).map((key) => {
+        const row = botMap[key] || {};
+        const rowKey = row.key || key;
+        return {
+          ...row,
+          key: rowKey,
+          starting: !!startingKeys.value[rowKey],
+        };
+      }),
       page: 1,
       pageCount: 1,
-      itemCount: Object.keys(state.bots).length,
+      itemCount: Object.keys(botMap).length,
     };
   }
 
@@ -199,18 +202,33 @@
   }
 
   async function handleSubmit(record: BotRow, done: () => void) {
-    const state = await ensureState();
-    const current = state.bots[record.key] || {};
-    state.bots[record.key] = {
-      ...current,
-      ...record,
-      webhookSecret: current.webhookSecret || '',
-      webhookPath: current.webhookPath || '',
+    try {
+      await upsertBot(toBotPayload(record));
+      stateRef.value = null;
+      message.success('保存成功');
+      done(true);
+      reloadTable();
+    } catch (e: any) {
+      const detail = e?.message || e?.msg || '保存失败，请查看接口返回';
+      message.error(detail);
+      done(false);
+    }
+  }
+
+  function toBotPayload(record: BotRow) {
+    return {
+      key: record.key,
+      role: record.role,
+      token: record.token,
+      displayName: record.displayName,
+      username: record.username,
+      webhookSecret: record.webhookSecret,
+      webhookPath: record.webhookPath,
+      enabled: record.enabled,
+      autoPull: record.autoPull,
+      autoForward: record.autoForward,
+      reviewEnabled: record.reviewEnabled,
     };
-    await saveState(state);
-    message.success('保存成功');
-    done();
-    reloadTable();
   }
 
   async function handlePluginSubmit(botKey: string, plugins: Record<string, any>) {

@@ -14,11 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -27,11 +27,14 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 	"hotgo/addons/lazysheep_tggo/model"
+	"hotgo/internal/dao"
 )
 
 const (
 	quickMediaGroupLimit          = 10
+	quickMediaGroupMaxBytes       = 32 << 20
 	quickMediaMaxBytes            = 48 << 20
 	quickMediaDownloadConcurrency = 5
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
@@ -40,7 +43,7 @@ const (
 var quickMediaHTTPClient = &http.Client{
 	Timeout: 90 * time.Second,
 	Transport: &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: nil,
 		DialContext: (&net.Dialer{
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -81,16 +84,20 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 	}
 
 	title, text := noteText(note.Items)
-	g.Log().Debugf(ctx, "快速推送开始 botKey:%s binding:%s targetChat:%d title:%s", botKey, binding.Key, targetChatID, title)
+	started := time.Now()
+	g.Log().Debugf(ctx, "%s 快速推送开始 botKey:%s binding:%s targetChat:%d title:%s", pullTraceTag(ctx), botKey, binding.Key, targetChatID, title)
 	plugins := s.collectorPlugins(ctx, botKey)
 	settings := map[string]any{}
 	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
 		settings = cfg.Settings
 	}
 	locations := collectQuickLocations(note.Items)
-	caption := buildQuickCaption(title, text, settings, locations)
-	mediaAssets := buildQuickMediaAssets(ctx, note.Items)
-	g.Log().Debugf(ctx, "快速推送媒体准备完成 botKey:%s binding:%s assets:%d", botKey, binding.Key, len(mediaAssets))
+	caption := buildQuickCaption(title, text, settings, locations, plugins, binding.PluginState)
+	mediaAssets, err := buildQuickMediaAssets(ctx, note.Items)
+	if err != nil {
+		return err
+	}
+	g.Log().Debugf(ctx, "%s 快速推送媒体准备完成 botKey:%s binding:%s assets:%d elapsed:%s", pullTraceTag(ctx), botKey, binding.Key, len(mediaAssets), time.Since(started).Round(time.Millisecond))
 	if len(mediaAssets) == 0 {
 		return s.sendQuickText(ctx, rt.client, targetChatID, caption)
 	}
@@ -109,16 +116,18 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 				AllowSendingWithoutReply: true,
 			}
 		}
+		chunkStarted := time.Now()
+		g.Log().Debugf(ctx, "%s 快速推送媒体分片发送开始 botKey:%s binding:%s chunk:%d items:%d", pullTraceTag(ctx), botKey, binding.Key, i+1, len(chunk))
 		msgs, err := sendQuickMediaChunk(ctx, rt.client, targetChatID, chunk, chunkCaption, reply)
 		if err != nil {
 			return err
 		}
-		g.Log().Debugf(ctx, "快速推送媒体分片完成 botKey:%s binding:%s chunk:%d messages:%d", botKey, binding.Key, i+1, len(msgs))
+		g.Log().Debugf(ctx, "%s 快速推送媒体分片完成 botKey:%s binding:%s chunk:%d messages:%d elapsed:%s", pullTraceTag(ctx), botKey, binding.Key, i+1, len(msgs), time.Since(chunkStarted).Round(time.Millisecond))
 		if firstMsgID == 0 && len(msgs) > 0 {
 			firstMsgID = msgs[0].ID
 		}
 	}
-	g.Log().Debugf(ctx, "快速推送完成 botKey:%s binding:%s targetChat:%d", botKey, binding.Key, targetChatID)
+	g.Log().Debugf(ctx, "%s 快速推送完成 botKey:%s binding:%s targetChat:%d total:%s", pullTraceTag(ctx), botKey, binding.Key, targetChatID, time.Since(started).Round(time.Millisecond))
 	return nil
 }
 
@@ -134,8 +143,8 @@ func (s *sLazySheepTGGo) sendQuickText(ctx context.Context, client *bot.Bot, cha
 	return err
 }
 
-func buildQuickCaption(title, text string, settings map[string]any, locations []quickLocationItem) string {
-	footer := pushSettingString(settings, "footer", "")
+func buildQuickCaption(title, text string, settings map[string]any, locations []quickLocationItem, plugins map[string]*model.PluginConfig, bindingState map[string]any) string {
+	footer := resolveContentFooter(plugins, settings, bindingState)
 	parts := make([]string, 0, 4)
 	if strings.TrimSpace(title) != "" {
 		parts = append(parts, html.EscapeString(title))
@@ -143,11 +152,11 @@ func buildQuickCaption(title, text string, settings map[string]any, locations []
 	if trimmed := strings.TrimSpace(text); trimmed != "" {
 		parts = append(parts, html.EscapeString(limitCaption(trimmed, 650)))
 	}
-	if footer != "" {
-		parts = append(parts, html.EscapeString(footer))
-	}
 	if locationBlock := buildQuickLocationBlock(locations); locationBlock != "" {
 		parts = append(parts, locationBlock)
+	}
+	if footer != "" {
+		parts = append(parts, footer)
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -160,10 +169,14 @@ type quickMediaAsset struct {
 	ThumbnailURL string
 	Duration     int
 	AspectRatio  float64
+	TgFileID     string
 }
 
-func buildQuickMediaAssets(ctx context.Context, items []noteItem) []quickMediaAsset {
+func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaAsset, error) {
 	results := make([]*quickMediaAsset, len(items))
+	expected := 0
+	errs := make([]string, 0)
+	var errMu sync.Mutex
 	thumbURL := ""
 	for _, item := range items {
 		if item.Type == noteTypeImage && thumbURL == "" {
@@ -175,40 +188,59 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) []quickMediaAs
 	for index, item := range items {
 		switch item.Type {
 		case noteTypeImage:
+			expected++
 			wg.Add(1)
 			go func(idx int, item noteItem) {
 				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				g.Log().Debugf(ctx, "下载快速推送图片开始 index:%d url:%s", idx, item.Content)
-				filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, idx)
-				if err != nil {
-					g.Log().Warningf(ctx, "下载快速推送图片失败 url:%s err:%+v", item.Content, err)
+				if asset := cachedQuickTelegramMedia(ctx, item, idx); asset != nil {
+					results[idx] = asset
 					return
 				}
-				g.Log().Debugf(ctx, "下载快速推送图片完成 index:%d bytes:%d", idx, len(data))
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				g.Log().Debugf(ctx, "%s 下载快速推送图片开始 index:%d url:%s", pullTraceTag(ctx), idx, item.Content)
+				filename, data, contentType, err := downloadQuickMediaWithType(ctx, item.Content, item.Type, idx)
+				if err != nil {
+					g.Log().Warningf(ctx, "%s 下载快速推送图片失败 url:%s err:%+v", pullTraceTag(ctx), item.Content, err)
+					errMu.Lock()
+					errs = append(errs, fmt.Sprintf("图片:%s %v", abbreviateMediaURL(item.Content), err))
+					errMu.Unlock()
+					return
+				}
+				g.Log().Debugf(ctx, "%s 下载快速推送图片完成 index:%d bytes:%d", pullTraceTag(ctx), idx, len(data))
+				mediaType := resolveQuickMediaType(item.Type, filename, data, contentType)
 				results[idx] = &quickMediaAsset{
-					Type:      noteTypeImage,
+					Type:      mediaType,
 					Filename:  filename,
 					Data:      data,
 					SourceURL: strings.TrimSpace(item.Content),
 				}
 			}(index, item)
 		case noteTypeVideo:
+			expected++
 			wg.Add(1)
 			go func(idx int, item noteItem) {
 				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				g.Log().Debugf(ctx, "下载快速推送视频开始 index:%d url:%s", idx, item.Content)
-				filename, data, err := downloadQuickMedia(ctx, item.Content, item.Type, idx)
-				if err != nil {
-					g.Log().Warningf(ctx, "下载快速推送视频失败 url:%s err:%+v", item.Content, err)
+				if asset := cachedQuickTelegramMedia(ctx, item, idx); asset != nil {
+					asset.ThumbnailURL = thumbURL
+					results[idx] = asset
 					return
 				}
-				g.Log().Debugf(ctx, "下载快速推送视频完成 index:%d bytes:%d", idx, len(data))
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				g.Log().Debugf(ctx, "%s 下载快速推送视频开始 index:%d url:%s", pullTraceTag(ctx), idx, item.Content)
+				filename, data, contentType, err := downloadQuickMediaWithType(ctx, item.Content, item.Type, idx)
+				if err != nil {
+					g.Log().Warningf(ctx, "%s 下载快速推送视频失败 url:%s err:%+v", pullTraceTag(ctx), item.Content, err)
+					errMu.Lock()
+					errs = append(errs, fmt.Sprintf("视频:%s %v", abbreviateMediaURL(item.Content), err))
+					errMu.Unlock()
+					return
+				}
+				g.Log().Debugf(ctx, "%s 下载快速推送视频完成 index:%d bytes:%d", pullTraceTag(ctx), idx, len(data))
+				mediaType := resolveQuickMediaType(item.Type, filename, data, contentType)
 				results[idx] = &quickMediaAsset{
-					Type:         noteTypeVideo,
+					Type:         mediaType,
 					Filename:     filename,
 					Data:         data,
 					SourceURL:    strings.TrimSpace(item.Content),
@@ -227,7 +259,28 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) []quickMediaAs
 		}
 		out = append(out, *asset)
 	}
-	return out
+	if expected > 0 && len(out) != expected {
+		return nil, gerror.Newf("媒体准备失败，已取消推送：需要 %d 个媒体，成功 %d 个，失败 %d 个。%s", expected, len(out), expected-len(out), limitMediaPrepareErrors(errs))
+	}
+	return out, nil
+}
+
+func abbreviateMediaURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if len(rawURL) <= 90 {
+		return rawURL
+	}
+	return rawURL[:90] + "..."
+}
+
+func limitMediaPrepareErrors(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) > 3 {
+		items = items[:3]
+	}
+	return strings.Join(items, "；")
 }
 
 type quickLocationItem struct {
@@ -279,18 +332,25 @@ func sendQuickMediaChunk(ctx context.Context, client *bot.Bot, chatID int64, ass
 			Media:           media,
 			ReplyParameters: reply,
 		}
+		started := time.Now()
 		msgs, err := client.SendMediaGroup(ctx, params)
 		if err == nil {
+			g.Log().Debugf(ctx, "%s TG 媒体组发送成功 items:%d elapsed:%s", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond))
+			rememberQuickTelegramMedia(ctx, assets, msgs)
 			return msgs, nil
 		}
 		lastErr = err
+		g.Log().Warningf(ctx, "%s TG 媒体组发送失败 items:%d elapsed:%s err:%+v", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond), err)
 		var rateErr *bot.TooManyRequestsError
-		if !errors.As(err, &rateErr) {
+		if !errors.As(err, &rateErr) && !isRetriablePullError(err) {
 			return nil, err
 		}
-		waitSeconds := rateErr.RetryAfter + 1
-		if waitSeconds <= 0 {
-			waitSeconds = 2
+		waitSeconds := attempt + 2
+		if rateErr != nil {
+			waitSeconds = rateErr.RetryAfter + 1
+			if waitSeconds <= 0 {
+				waitSeconds = 2
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -306,6 +366,10 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 	for _, asset := range assets {
 		switch asset.Type {
 		case noteTypeImage:
+			if strings.TrimSpace(asset.TgFileID) != "" {
+				out = append(out, &models.InputMediaPhoto{Media: asset.TgFileID})
+				continue
+			}
 			out = append(out, &models.InputMediaPhoto{
 				Media:           "attach://" + asset.Filename,
 				MediaAttachment: bytes.NewReader(asset.Data),
@@ -313,12 +377,16 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 		case noteTypeVideo:
 			width, height := videoDimensions(asset.AspectRatio)
 			video := &models.InputMediaVideo{
-				Media:             "attach://" + asset.Filename,
-				MediaAttachment:   bytes.NewReader(asset.Data),
 				SupportsStreaming: true,
 				Duration:          asset.Duration,
 				Width:             width,
 				Height:            height,
+			}
+			if strings.TrimSpace(asset.TgFileID) != "" {
+				video.Media = asset.TgFileID
+			} else {
+				video.Media = "attach://" + asset.Filename
+				video.MediaAttachment = bytes.NewReader(asset.Data)
 			}
 			if strings.TrimSpace(asset.ThumbnailURL) != "" {
 				video.Thumbnail = &models.InputFileString{Data: asset.ThumbnailURL}
@@ -327,6 +395,111 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 		}
 	}
 	return out
+}
+
+func cachedQuickTelegramMedia(ctx context.Context, item noteItem, index int) *quickMediaAsset {
+	fileID := strings.TrimSpace(item.TgFileID)
+	if fileID == "" {
+		if cachedID, cachedType := cachedTelegramFileIDBySourceURL(ctx, item.Content); cachedID != "" {
+			fileID = cachedID
+			if cachedType != "" {
+				item.Type = cachedType
+			}
+		}
+	}
+	if fileID == "" {
+		return nil
+	}
+	mediaType := item.Type
+	if mediaType != noteTypeVideo {
+		mediaType = noteTypeImage
+	}
+	return &quickMediaAsset{
+		Type:        mediaType,
+		Filename:    quickMediaFilename(item.Content, mediaType, index),
+		SourceURL:   strings.TrimSpace(item.Content),
+		Duration:    item.Duration,
+		AspectRatio: item.AspectRatio,
+		TgFileID:    fileID,
+	}
+}
+
+func cachedTelegramFileIDBySourceURL(ctx context.Context, rawURL string) (string, string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", ""
+	}
+	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	var row struct {
+		TgFileId  string `json:"tgFileId"`
+		AssetType string `json:"assetType"`
+	}
+	if err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).
+		Fields(assetCols.TgFileId, assetCols.AssetType).
+		Where(assetCols.SourceUrl, rawURL).
+		WhereNot(assetCols.TgFileId, "").
+		OrderDesc(assetCols.Id).
+		Scan(&row); err != nil {
+		g.Log().Warningf(ctx, "查询 Telegram file_id 缓存失败 url:%s err:%+v", rawURL, err)
+		return "", ""
+	}
+	mediaType := noteTypeImage
+	if row.AssetType == "video" || row.AssetType == "verify_video" {
+		mediaType = noteTypeVideo
+	}
+	return strings.TrimSpace(row.TgFileId), mediaType
+}
+
+func rememberQuickTelegramMedia(ctx context.Context, assets []quickMediaAsset, msgs []*models.Message) {
+	for i, asset := range assets {
+		if i >= len(msgs) || strings.TrimSpace(asset.SourceURL) == "" {
+			continue
+		}
+		fileID := telegramFileIDFromMessage(msgs[i], asset.Type)
+		if fileID == "" {
+			continue
+		}
+		updateTelegramFileID(ctx, asset.SourceURL, fileID)
+	}
+}
+
+func telegramFileIDFromMessage(msg *models.Message, mediaType string) string {
+	if msg == nil {
+		return ""
+	}
+	if mediaType == noteTypeVideo && msg.Video != nil {
+		return strings.TrimSpace(msg.Video.FileID)
+	}
+	if len(msg.Photo) > 0 {
+		return strings.TrimSpace(msg.Photo[len(msg.Photo)-1].FileID)
+	}
+	if msg.Video != nil {
+		return strings.TrimSpace(msg.Video.FileID)
+	}
+	return ""
+}
+
+func updateTelegramFileID(ctx context.Context, sourceURL, fileID string) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	fileID = strings.TrimSpace(fileID)
+	if sourceURL == "" || fileID == "" {
+		return
+	}
+	now := gtime.Now()
+	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Where(assetCols.SourceUrl, sourceURL).Data(g.Map{
+		assetCols.TgFileId:  fileID,
+		assetCols.UpdatedAt: now,
+	}).Update(); err != nil {
+		g.Log().Warningf(ctx, "更新笔记资源 Telegram file_id 失败 url:%s err:%+v", sourceURL, err)
+	}
+	itemCols := dao.AddonLazysheepTggoNoteItem.Columns()
+	if _, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Where(itemCols.Content, sourceURL).Data(g.Map{
+		itemCols.TgFileId:  fileID,
+		itemCols.UpdatedAt: now,
+	}).Update(); err != nil {
+		g.Log().Warningf(ctx, "更新笔记项 Telegram file_id 失败 url:%s err:%+v", sourceURL, err)
+	}
 }
 
 func videoDimensions(aspectRatio float64) (int, int) {
@@ -342,36 +515,31 @@ func videoDimensions(aspectRatio float64) (int, int) {
 }
 
 func downloadQuickMedia(ctx context.Context, rawURL, itemType string, index int) (filename string, data []byte, err error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return "", nil, fmt.Errorf("媒体地址为空")
+	filename, data, _, err = downloadQuickMediaWithType(ctx, rawURL, itemType, index)
+	return filename, data, err
+}
+
+func downloadQuickMediaWithType(ctx context.Context, rawURL, itemType string, index int) (filename string, data []byte, contentType string, err error) {
+	filename, data, _, err = downloadCachedMedia(ctx, rawURL, itemType, index)
+	contentType = mimeFromBytes(data)
+	return filename, data, contentType, err
+}
+
+func resolveQuickMediaType(itemType, filename string, data []byte, contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch {
+	case strings.HasPrefix(contentType, "video/"), ext == ".mp4" || ext == ".mov" || ext == ".m4v":
+		return noteTypeVideo
+	case strings.HasPrefix(contentType, "image/"):
+		return noteTypeImage
+	case itemType == noteTypeVideo:
+		return noteTypeVideo
+	case strings.HasPrefix(mimeFromBytes(data), "video/"):
+		return noteTypeVideo
+	default:
+		return noteTypeImage
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
-	resp, err := quickMediaHTTPClient.Do(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", nil, fmt.Errorf("下载媒体失败，HTTP状态：%d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, quickMediaMaxBytes+1))
-	if err != nil {
-		return "", nil, err
-	}
-	if len(body) == 0 {
-		return "", nil, fmt.Errorf("媒体内容为空")
-	}
-	if len(body) > quickMediaMaxBytes {
-		return "", nil, fmt.Errorf("媒体文件超过 %dMB", quickMediaMaxBytes>>20)
-	}
-	body = decodeBangchatMedia(rawURL, body)
-	return quickMediaFilename(rawURL, itemType, index), body, nil
 }
 
 func decodeBangchatMedia(rawURL string, body []byte) []byte {
@@ -452,12 +620,20 @@ func chunkQuickMediaAssets(items []quickMediaAsset, size int) [][]quickMediaAsse
 		return nil
 	}
 	out := make([][]quickMediaAsset, 0, (len(items)+size-1)/size)
-	for start := 0; start < len(items); start += size {
-		end := start + size
-		if end > len(items) {
-			end = len(items)
+	chunk := make([]quickMediaAsset, 0, size)
+	chunkBytes := 0
+	for _, item := range items {
+		itemBytes := len(item.Data)
+		if len(chunk) > 0 && (len(chunk) >= size || chunkBytes+itemBytes > quickMediaGroupMaxBytes) {
+			out = append(out, chunk)
+			chunk = make([]quickMediaAsset, 0, size)
+			chunkBytes = 0
 		}
-		out = append(out, items[start:end])
+		chunk = append(chunk, item)
+		chunkBytes += itemBytes
+	}
+	if len(chunk) > 0 {
+		out = append(out, chunk)
 	}
 	return out
 }

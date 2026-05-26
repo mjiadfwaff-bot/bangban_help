@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_bot` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键',
   `bot_key` varchar(64) NOT NULL DEFAULT '' COMMENT '机器人标识',
+  `role` varchar(32) NOT NULL DEFAULT 'user' COMMENT '机器人角色',
   `member_id` bigint(20) DEFAULT 0 COMMENT '所属后台用户',
   `token` varchar(255) NOT NULL DEFAULT '' COMMENT 'Telegram Bot Token',
   `bot_name` varchar(128) DEFAULT '' COMMENT '机器人名称',
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_binding` (
   `publish_enabled` tinyint(1) DEFAULT 1 COMMENT '推送开关',
   `verify_enabled` tinyint(1) DEFAULT 1 COMMENT '验证按钮开关',
   `location_enabled` tinyint(1) DEFAULT 1 COMMENT '位置按钮开关',
+  `plugin_settings` longtext COMMENT '插件状态',
   `last_pull_id` bigint(20) DEFAULT 0 COMMENT '最后拉取ID',
   `last_cursor` varchar(255) DEFAULT '' COMMENT '最后游标',
   `status` tinyint(1) DEFAULT 1 COMMENT '状态',

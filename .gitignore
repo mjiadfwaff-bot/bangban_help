@@ -1,8 +1,8 @@
 *.zip
 .idea
+.tmp/
 .user.ini
 .DS_Store
 pull.bat
 push.sh
 /dist
-

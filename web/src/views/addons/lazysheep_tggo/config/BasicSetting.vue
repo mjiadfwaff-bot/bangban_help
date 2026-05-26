@@ -48,7 +48,6 @@
         <n-form-item label="开关">
           <n-space>
             <n-checkbox v-model:checked="formValue.enabled">启用机器人</n-checkbox>
-            <n-checkbox v-model:checked="formValue.reviewEnabled">启用审核</n-checkbox>
             <n-checkbox v-model:checked="formValue.autoPull">自动采集</n-checkbox>
             <n-checkbox v-model:checked="formValue.autoForward">自动推送</n-checkbox>
             <n-checkbox v-model:checked="formValue.autoPush">绑定自动推送</n-checkbox>
@@ -117,6 +116,7 @@
   function newFormValue() {
     return {
       botKey: 'default',
+      role: 'user',
       token: '',
       displayName: '',
       webhookSecret: '',
@@ -125,7 +125,6 @@
       reviewChatId: 0,
       publishChatId: 0,
       enabled: true,
-      reviewEnabled: true,
       autoPull: false,
       autoForward: false,
       autoPush: false,
@@ -165,12 +164,14 @@
       bots: {
         [botKey]: {
           key: botKey,
+          role: formValue.value.role || 'user',
           token: formValue.value.token,
           displayName: formValue.value.displayName,
+          webhookSecret: formValue.value.webhookSecret,
+          webhookPath: formValue.value.webhookPath,
           enabled: formValue.value.enabled,
           autoPull: formValue.value.autoPull,
           autoForward: formValue.value.autoForward,
-          reviewEnabled: formValue.value.reviewEnabled,
         },
       },
       users: {},
@@ -217,6 +218,7 @@
     if (firstBotKey) {
       const bot = bots[firstBotKey];
       next.botKey = bot.key || firstBotKey;
+      next.role = bot.role === 'finance' ? 'official' : bot.role || 'user';
       next.token = bot.token || '';
       next.displayName = bot.displayName || '';
       next.webhookSecret = bot.webhookSecret || '';
@@ -224,7 +226,6 @@
       next.enabled = bot.enabled !== false;
       next.autoPull = !!bot.autoPull;
       next.autoForward = !!bot.autoForward;
-      next.reviewEnabled = bot.reviewEnabled !== false;
     }
     const bindings = state?.bindings || {};
     const firstBindingKey = Object.keys(bindings)[0];

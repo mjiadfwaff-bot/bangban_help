@@ -62,6 +62,9 @@ func (m *module) Start(option *addons.Option) (err error) {
 			g.Log().Warningf(m.ctx, "懒羊羊TGGo机器人启动失败：%+v", err)
 		}
 	}()
+	aservice.SysLazysheepTggo().StartAutoPullLoop(m.ctx)
+	aservice.SysLazysheepTggo().StartPullMonitorAggregator(m.ctx)
+	aservice.SysLazysheepTggo().StartPushQueueLoop(m.ctx)
 	return
 }
 

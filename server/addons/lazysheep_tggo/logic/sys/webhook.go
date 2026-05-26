@@ -40,6 +40,12 @@ func (s *sLazySheepTGGo) normalizeBotConfig(key string, item *model.BotConfig) {
 		return
 	}
 	item.Key = key
+	if item.Role == "finance" {
+		item.Role = "official"
+	}
+	if item.Role == "" {
+		item.Role = "user"
+	}
 	if item.WebhookPath == "" {
 		item.WebhookPath = defaultWebhookPath(key)
 	}
@@ -189,6 +195,35 @@ func randomWebhookSecret() string {
 		return shortHash(fmt.Sprintf("%d", time.Now().UnixNano()))
 	}
 	return hex.EncodeToString(buf)
+}
+
+func (s *sLazySheepTGGo) syncBotAfterSave(ctx context.Context, botKey string) error {
+	state, err := s.GetState(ctx)
+	if err != nil {
+		return err
+	}
+	cfg, ok := state.Bots[botKey]
+	if !ok || cfg == nil {
+		return nil
+	}
+	if !cfg.Enabled || strings.TrimSpace(cfg.Token) == "" {
+		return s.SyncBot(ctx, botKey)
+	}
+	baseURL, err := s.webhookBaseURL(ctx)
+	if err != nil || baseURL == "" {
+		if err != nil {
+			g.Log().Warningf(ctx, "跳过 Telegram webhook 自动注册：%+v", err)
+		}
+		return s.startPollingBot(ctx, botKey)
+	}
+	webhookURL := baseURL + cfg.WebhookPath
+	if err = s.SetWebhook(ctx, botKey, webhookURL); err != nil {
+		return err
+	}
+	if err = s.VerifyWebhook(ctx, botKey, webhookURL); err != nil {
+		return err
+	}
+	return s.SyncBot(ctx, botKey)
 }
 
 func shortHash(raw string) string {

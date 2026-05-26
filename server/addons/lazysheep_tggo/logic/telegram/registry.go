@@ -7,6 +7,7 @@ package telegram
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/go-telegram/bot"
@@ -16,7 +17,10 @@ import (
 
 type contextKey string
 
-const botKeyContextKey contextKey = "lazysheep_tggo_bot_key"
+const (
+	botKeyContextKey           contextKey = "lazysheep_tggo_bot_key"
+	callbackAnsweredContextKey contextKey = "lazysheep_tggo_callback_answered"
+)
 
 type MessageHandler interface {
 	Key() string
@@ -24,6 +28,10 @@ type MessageHandler interface {
 	MatchType() bot.MatchType
 	Description() string
 	Handle(ctx context.Context, b *bot.Bot, update *models.Update) error
+}
+
+type MessageMatcher interface {
+	Match(update *models.Update) bool
 }
 
 type CallbackHandler interface {
@@ -60,6 +68,18 @@ func CurrentBotKey(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+func WithCallbackAnswered(ctx context.Context) context.Context {
+	return context.WithValue(ctx, callbackAnsweredContextKey, true)
+}
+
+func CallbackAnswered(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(callbackAnsweredContextKey).(bool)
+	return v
 }
 
 type BotPlugin interface {
@@ -114,4 +134,13 @@ func BotPlugins() []BotPlugin {
 	out := make([]BotPlugin, len(botPlugins))
 	copy(out, botPlugins)
 	return out
+}
+
+func startPayload(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "/start") {
+		return ""
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(text, "/start"))
+	return strings.TrimSpace(payload)
 }

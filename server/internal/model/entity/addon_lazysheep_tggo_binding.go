@@ -25,6 +25,7 @@ type AddonLazysheepTggoBinding struct {
 	PublishEnabled  int         `json:"publishEnabled"  orm:"publish_enabled"  description:"推送开关"`
 	VerifyEnabled   int         `json:"verifyEnabled"   orm:"verify_enabled"   description:"验证按钮开关"`
 	LocationEnabled int         `json:"locationEnabled" orm:"location_enabled" description:"位置按钮开关"`
+	PluginSettings  string      `json:"pluginSettings"  orm:"plugin_settings"   description:"插件状态"`
 	LastPullId      int64       `json:"lastPullId"      orm:"last_pull_id"     description:"最后拉取ID"`
 	LastCursor      string      `json:"lastCursor"      orm:"last_cursor"      description:"最后游标"`
 	Status          int         `json:"status"          orm:"status"           description:"状态"`

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 	"hotgo/internal/consts"
 	"hotgo/internal/library/dbinit"
 )
@@ -23,10 +24,43 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err := s.ensureUserBotKey(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureUserExpireField(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureBindingPluginSettings(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureBotRoleField(ctx); err != nil {
+		return err
+	}
+	if err := s.ensurePointsLogTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureSignLogTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureInviteLogTable(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureNoteTables(ctx); err != nil {
 		return err
 	}
 	if err := s.ensureWebhookLogTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureChatMapTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensurePushQueueTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensurePushLogTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensurePushDedupTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureAdminMenus(ctx); err != nil {
 		return err
 	}
 	ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_bot")
@@ -42,6 +76,34 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	}
 	if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
 		return gerror.Wrap(err, "初始化懒羊羊TGGo数据表失败")
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensureBotRoleField(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_bot"); err != nil || !ok {
+		return err
+	}
+	hasField, err := tableHasField(ctx, "hg_addon_lazysheep_tggo_bot", "role")
+	if err != nil {
+		return gerror.Wrap(err, "检查机器人角色字段失败")
+	}
+	if hasField {
+		return nil
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err = g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_bot ADD COLUMN IF NOT EXISTS role varchar(32) DEFAULT 'user'")
+	case consts.DBMysql, "":
+		_, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_bot` ADD COLUMN `role` varchar(32) NOT NULL DEFAULT 'user' COMMENT '机器人角色' AFTER `bot_key`")
+	default:
+		return nil
+	}
+	if err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
+		return gerror.Wrap(err, "更新机器人角色字段失败")
 	}
 	return nil
 }
@@ -142,6 +204,207 @@ func (s *sLazySheepTGGo) ensureWebhookLogTable(ctx context.Context) error {
 	}
 }
 
+func (s *sLazySheepTGGo) ensureChatMapTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_chat_map"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_chat_map (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				chat_type VARCHAR(32) NOT NULL DEFAULT '',
+				title VARCHAR(255) NOT NULL DEFAULT '',
+				username VARCHAR(128) NOT NULL DEFAULT '',
+				label VARCHAR(255) NOT NULL DEFAULT '',
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL,
+				UNIQUE (bot_key, chat_id)
+			)
+		`)
+		return err
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_chat_map` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '聊天ID',"+
+			"`chat_type` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '聊天类型',"+
+			"`title` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '聊天标题',"+
+			"`username` VARCHAR(128) NOT NULL DEFAULT '' COMMENT '聊天用户名',"+
+			"`label` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '显示名称',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"UNIQUE KEY `bot_chat_id` (`bot_key`,`chat_id`),"+
+			"KEY `updated_at` (`updated_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG频道显示映射'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensurePushQueueTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_push_queue"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_push_queue (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				binding_key VARCHAR(255) NOT NULL DEFAULT '',
+				source_url VARCHAR(500) NOT NULL DEFAULT '',
+				note_id BIGINT NOT NULL DEFAULT 0,
+				content_id BIGINT NOT NULL DEFAULT 0,
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				status INT NOT NULL DEFAULT 1,
+				attempts INT NOT NULL DEFAULT 0,
+				max_attempts INT NOT NULL DEFAULT 5,
+				last_error TEXT,
+				next_retry_at TIMESTAMP NULL,
+				started_at TIMESTAMP NULL,
+				finished_at TIMESTAMP NULL,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL
+			)
+		`)
+		if err != nil {
+			return err
+		}
+		_, _ = g.DB().Exec(ctx, "CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_queue_status_next ON hg_addon_lazysheep_tggo_push_queue (status, next_retry_at)")
+		_, _ = g.DB().Exec(ctx, "CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_queue_binding ON hg_addon_lazysheep_tggo_push_queue (bot_key, binding_key)")
+		return nil
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_push_queue` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`binding_key` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '绑定标识',"+
+			"`source_url` VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'BangChat链接',"+
+			"`note_id` BIGINT NOT NULL DEFAULT 0 COMMENT '笔记ID',"+
+			"`content_id` BIGINT NOT NULL DEFAULT 0 COMMENT '内容ID',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '目标会话ID',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1待推送 2执行中 3成功 4重试中 5失败',"+
+			"`attempts` INT NOT NULL DEFAULT 0 COMMENT '已尝试次数',"+
+			"`max_attempts` INT NOT NULL DEFAULT 5 COMMENT '最大尝试次数',"+
+			"`last_error` TEXT COMMENT '最近错误',"+
+			"`next_retry_at` DATETIME DEFAULT NULL COMMENT '下次重试时间',"+
+			"`started_at` DATETIME DEFAULT NULL COMMENT '开始时间',"+
+			"`finished_at` DATETIME DEFAULT NULL COMMENT '完成时间',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"KEY `status_next` (`status`,`next_retry_at`),"+
+			"KEY `bot_binding` (`bot_key`,`binding_key`),"+
+			"KEY `note_id` (`note_id`),"+
+			"KEY `created_at` (`created_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG采集推送任务'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensurePushLogTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_push_log"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_push_log (
+				id BIGSERIAL PRIMARY KEY,
+				task_id BIGINT NOT NULL DEFAULT 0,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				binding_key VARCHAR(255) NOT NULL DEFAULT '',
+				note_id BIGINT NOT NULL DEFAULT 0,
+				content_id BIGINT NOT NULL DEFAULT 0,
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				status INT NOT NULL DEFAULT 0,
+				attempt INT NOT NULL DEFAULT 0,
+				message_id BIGINT NOT NULL DEFAULT 0,
+				elapsed_ms BIGINT NOT NULL DEFAULT 0,
+				error TEXT,
+				created_at TIMESTAMP NULL
+			)
+		`)
+		if err != nil {
+			return err
+		}
+		_, _ = g.DB().Exec(ctx, "CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_log_chat_time ON hg_addon_lazysheep_tggo_push_log (bot_key, chat_id, created_at)")
+		return nil
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_push_log` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`task_id` BIGINT NOT NULL DEFAULT 0 COMMENT '任务ID',"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`binding_key` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '绑定标识',"+
+			"`note_id` BIGINT NOT NULL DEFAULT 0 COMMENT '笔记ID',"+
+			"`content_id` BIGINT NOT NULL DEFAULT 0 COMMENT '内容ID',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '频道ID',"+
+			"`status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态:1成功 2失败 3跳过',"+
+			"`attempt` INT NOT NULL DEFAULT 0 COMMENT '尝试次数',"+
+			"`message_id` BIGINT NOT NULL DEFAULT 0 COMMENT 'TG消息ID',"+
+			"`elapsed_ms` BIGINT NOT NULL DEFAULT 0 COMMENT '耗时毫秒',"+
+			"`error` TEXT COMMENT '错误',"+
+			"`created_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"KEY `chat_time` (`bot_key`,`chat_id`,`created_at`),"+
+			"KEY `task_id` (`task_id`),"+
+			"KEY `note_id` (`note_id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG采集推送日志'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensurePushDedupTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_push_dedup"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_push_dedup (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				binding_key VARCHAR(255) NOT NULL DEFAULT '',
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				note_id BIGINT NOT NULL DEFAULT 0,
+				content_id BIGINT NOT NULL DEFAULT 0,
+				fingerprint VARCHAR(128) NOT NULL DEFAULT '',
+				task_id BIGINT NOT NULL DEFAULT 0,
+				status INT NOT NULL DEFAULT 1,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL
+			)
+		`)
+		if err != nil {
+			return err
+		}
+		_, _ = g.DB().Exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_dedup_scope_fp ON hg_addon_lazysheep_tggo_push_dedup (bot_key, chat_id, fingerprint)")
+		return nil
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_push_dedup` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`binding_key` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '绑定标识',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '频道ID',"+
+			"`note_id` BIGINT NOT NULL DEFAULT 0 COMMENT '笔记ID',"+
+			"`content_id` BIGINT NOT NULL DEFAULT 0 COMMENT '内容ID',"+
+			"`fingerprint` VARCHAR(128) NOT NULL DEFAULT '' COMMENT '去重指纹',"+
+			"`task_id` BIGINT NOT NULL DEFAULT 0 COMMENT '任务ID',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1已入队 2已推送',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"UNIQUE KEY `scope_fp` (`bot_key`,`chat_id`,`fingerprint`),"+
+			"KEY `chat_id` (`chat_id`),"+
+			"KEY `note_id` (`note_id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG采集频道推送去重'")
+		return err
+	default:
+		return nil
+	}
+}
+
 func (s *sLazySheepTGGo) ensureUserBotKey(ctx context.Context) error {
 	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_user"); err != nil || !ok {
 		return err
@@ -169,6 +432,243 @@ func (s *sLazySheepTGGo) ensureUserBotKey(ctx context.Context) error {
 		return gerror.Wrap(err, "更新TG用户机器人字段失败")
 	}
 	return s.ensureUserUniqueIndex(ctx)
+}
+
+func (s *sLazySheepTGGo) ensureUserExpireField(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_user"); err != nil || !ok {
+		return err
+	}
+	hasField, err := tableHasField(ctx, "hg_addon_lazysheep_tggo_user", "member_expire_at")
+	if err != nil {
+		return gerror.Wrap(err, "检查TG用户到期字段失败")
+	}
+	if hasField {
+		return nil
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err = g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_user ADD COLUMN IF NOT EXISTS member_expire_at timestamp NULL")
+	case consts.DBMysql, "":
+		_, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_user` ADD COLUMN `member_expire_at` DATETIME DEFAULT NULL COMMENT '会员到期时间' AFTER `points`")
+	default:
+		return nil
+	}
+	if err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
+		return gerror.Wrap(err, "更新TG用户到期字段失败")
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensureBindingPluginSettings(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_binding"); err != nil || !ok {
+		return err
+	}
+	hasField, err := tableHasField(ctx, "hg_addon_lazysheep_tggo_binding", "plugin_settings")
+	if err != nil {
+		return gerror.Wrap(err, "检查绑定插件状态字段失败")
+	}
+	if hasField {
+		return nil
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err = g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_binding ADD COLUMN IF NOT EXISTS plugin_settings text DEFAULT ''")
+	case consts.DBMysql, "":
+		_, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_binding` ADD COLUMN `plugin_settings` LONGTEXT COMMENT '插件状态' AFTER `location_enabled`")
+	default:
+		return nil
+	}
+	if err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
+		return gerror.Wrap(err, "更新绑定插件状态字段失败")
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensureAdminMenus(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_admin_menu"); err != nil || !ok {
+		return err
+	}
+	now := gtime.Now()
+	menus := []g.Map{
+		{
+			"id": 3000, "pid": 0, "level": 1, "tree": "", "title": "插件应用", "name": "Addons", "path": "/addons", "icon": "AppstoreOutlined", "type": 1,
+			"redirect": "/addons/lazysheep_tggo/bot", "permissions": "", "permission_name": "", "component": "LAYOUT", "always_show": 1, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 90, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+		{
+			"id": 3001, "pid": 3000, "level": 2, "tree": "tr_3000 ", "title": "懒羊羊TGGo", "name": "addons_lazysheep_tggo", "path": "lazysheep_tggo", "icon": "", "type": 1,
+			"redirect": "/addons/lazysheep_tggo/bot", "permissions": "", "permission_name": "", "component": "ParentLayout", "always_show": 1, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 10, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+		{
+			"id": 3002, "pid": 3001, "level": 3, "tree": "tr_3000 tr_3001 ", "title": "机器人管理", "name": "addons_lazysheep_tggo_bot", "path": "bot", "icon": "", "type": 2,
+			"redirect": "", "permissions": "/lazysheep_tggo/config/get,/lazysheep_tggo/config/update,/lazysheep_tggo/config/deleteBot,/lazysheep_tggo/config/startBot,/lazysheep_tggo/config/botUsers,/lazysheep_tggo/config/updateBotUser", "permission_name": "", "component": "/addons/lazysheep_tggo/bot/index", "always_show": 0, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 10, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+		{
+			"id": 3003, "pid": 3001, "level": 3, "tree": "tr_3000 tr_3001 ", "title": "插件配置", "name": "addons_lazysheep_tggo_config", "path": "config", "icon": "", "type": 2,
+			"redirect": "", "permissions": "/lazysheep_tggo/config/get,/lazysheep_tggo/config/update", "permission_name": "", "component": "/addons/lazysheep_tggo/config/system", "always_show": 0, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 20, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+		{
+			"id": 3004, "pid": 3001, "level": 3, "tree": "tr_3000 tr_3001 ", "title": "全局配置", "name": "addons_lazysheep_tggo_global", "path": "global", "icon": "", "type": 2,
+			"redirect": "", "permissions": "", "permission_name": "", "component": "/addons/lazysheep_tggo/global/index", "always_show": 0, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 30, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+		{
+			"id": 3005, "pid": 3001, "level": 3, "tree": "tr_3000 tr_3001 ", "title": "拉取监控", "name": "addons_lazysheep_tggo_pull_monitor", "path": "pull-monitor", "icon": "", "type": 2,
+			"redirect": "", "permissions": "/lazysheep_tggo/config/pullMonitor", "permission_name": "", "component": "/addons/lazysheep_tggo/config/pull-monitor", "always_show": 0, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 40, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
+	}
+	for _, menu := range menus {
+		if err := upsertAdminMenu(ctx, menu); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensurePointsLogTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_points_log"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_points_log (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				telegram_id BIGINT NOT NULL DEFAULT 0,
+				change_num NUMERIC(18,4) NOT NULL DEFAULT 0,
+				before_num NUMERIC(18,4) NOT NULL DEFAULT 0,
+				after_num NUMERIC(18,4) NOT NULL DEFAULT 0,
+				action VARCHAR(64) NOT NULL DEFAULT '',
+				remark VARCHAR(255) NOT NULL DEFAULT '',
+				status INT NOT NULL DEFAULT 1,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL
+			)
+		`)
+		return err
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_points_log` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`telegram_id` BIGINT NOT NULL DEFAULT 0 COMMENT 'Telegram 用户ID',"+
+			"`change_num` DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '变动值',"+
+			"`before_num` DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '变动前',"+
+			"`after_num` DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '变动后',"+
+			"`action` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '变动动作',"+
+			"`remark` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '备注',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"KEY `bot_telegram_id` (`bot_key`,`telegram_id`),"+
+			"KEY `bot_action` (`bot_key`,`action`),"+
+			"KEY `created_at` (`created_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG积分流水'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensureSignLogTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_sign_log"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_sign_log (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				telegram_id BIGINT NOT NULL DEFAULT 0,
+				sign_day VARCHAR(10) NOT NULL DEFAULT '',
+				channel_total INT NOT NULL DEFAULT 0,
+				verified_total INT NOT NULL DEFAULT 0,
+				points_reward NUMERIC(18,4) NOT NULL DEFAULT 0,
+				remark VARCHAR(255) NOT NULL DEFAULT '',
+				status INT NOT NULL DEFAULT 1,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL,
+				UNIQUE (bot_key, telegram_id, sign_day)
+			)
+		`)
+		return err
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_sign_log` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`telegram_id` BIGINT NOT NULL DEFAULT 0 COMMENT 'Telegram 用户ID',"+
+			"`sign_day` VARCHAR(10) NOT NULL DEFAULT '' COMMENT '签到日期',"+
+			"`channel_total` INT NOT NULL DEFAULT 0 COMMENT '关注频道数',"+
+			"`verified_total` INT NOT NULL DEFAULT 0 COMMENT '已验证频道数',"+
+			"`points_reward` DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '积分奖励',"+
+			"`remark` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '备注',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"UNIQUE KEY `bot_telegram_day` (`bot_key`,`telegram_id`,`sign_day`),"+
+			"KEY `bot_day` (`bot_key`,`sign_day`),"+
+			"KEY `created_at` (`created_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG签到记录'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensureInviteLogTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_invite_log"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_invite_log (
+				id BIGSERIAL PRIMARY KEY,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				inviter_telegram_id BIGINT NOT NULL DEFAULT 0,
+				invitee_telegram_id BIGINT NOT NULL DEFAULT 0,
+				payload VARCHAR(64) NOT NULL DEFAULT '',
+				reward_points NUMERIC(18,4) NOT NULL DEFAULT 0,
+				status INT NOT NULL DEFAULT 1,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL,
+				UNIQUE (bot_key, invitee_telegram_id)
+			)
+		`)
+		return err
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_invite_log` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`inviter_telegram_id` BIGINT NOT NULL DEFAULT 0 COMMENT '邀请人 Telegram 用户ID',"+
+			"`invitee_telegram_id` BIGINT NOT NULL DEFAULT 0 COMMENT '被邀请 Telegram 用户ID',"+
+			"`payload` VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'start 参数',"+
+			"`reward_points` DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '奖励积分',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"UNIQUE KEY `bot_invitee` (`bot_key`,`invitee_telegram_id`),"+
+			"KEY `bot_inviter` (`bot_key`,`inviter_telegram_id`),"+
+			"KEY `created_at` (`created_at`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG邀请记录'")
+		return err
+	default:
+		return nil
+	}
 }
 
 func (s *sLazySheepTGGo) ensureUserUniqueIndex(ctx context.Context) error {
@@ -216,6 +716,34 @@ func tableHasField(ctx context.Context, table, field string) (bool, error) {
 	return false, nil
 }
 
+func upsertAdminMenu(ctx context.Context, data g.Map) error {
+	id := data["id"]
+	if id == nil {
+		return nil
+	}
+	count, err := g.DB().Model("hg_admin_menu").Where("id", id).Count()
+	if err != nil {
+		return gerror.Wrap(err, "检查插件菜单失败")
+	}
+	if count > 0 {
+		update := g.Map{}
+		for k, v := range data {
+			if k == "id" || k == "created_at" {
+				continue
+			}
+			update[k] = v
+		}
+		if _, err = g.DB().Model("hg_admin_menu").Where("id", id).Data(update).Update(); err != nil {
+			return gerror.Wrap(err, "更新插件菜单失败")
+		}
+		return nil
+	}
+	if _, err = g.DB().Model("hg_admin_menu").Data(data).Insert(); err != nil {
+		return gerror.Wrap(err, "创建插件菜单失败")
+	}
+	return nil
+}
+
 func mysqlHasIndex(ctx context.Context, table, index string) (bool, error) {
 	count, err := g.DB().GetCount(ctx, `
 		SELECT COUNT(*) FROM information_schema.statistics
@@ -225,6 +753,14 @@ func mysqlHasIndex(ctx context.Context, table, index string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "duplicate column") || strings.Contains(text, "1060")
 }
 
 func (s *sLazySheepTGGo) ensureAddonsConfigValue(ctx context.Context) error {

@@ -23,6 +23,7 @@
               <div class="panel-subtitle">按行组织，按钮会从左到右展示</div>
             </div>
             <n-space>
+              <n-button size="small" @click="restoreDefault">恢复默认</n-button>
               <n-button size="small" @click="addRow">新增一行</n-button>
               <n-button size="small" @click="openImport">JSON 导入</n-button>
             </n-space>
@@ -167,10 +168,14 @@
   }
 
   function newButton(data: any = {}) {
+    let value = data.value || '';
+    if (data.action === 'plugin' && value === '/pull 配置') {
+      value = '管理员配置';
+    }
     return {
       text: data.text || '',
       action: data.action || 'reply',
-      value: data.value || '',
+      value,
       adminOnly: data.adminOnly === true,
     };
   }
@@ -232,6 +237,30 @@
   function openImport() {
     importText.value = JSON.stringify({ buttons: formValue.value.buttons }, null, 2);
     importModalVisible.value = true;
+  }
+
+  function restoreDefault() {
+    formValue.value.menuVisible = true;
+    formValue.value.showPluginCommands = false;
+    formValue.value.buttons = normalizeButtons([
+      [
+        { text: '创建机器人', action: 'reply', value: '请发送你的 Telegram Bot Token，系统会自动创建并绑定你的专属机器人。' },
+        { text: '邀请赚积分', action: 'reply', value: '邀请功能暂未开放。' },
+      ],
+      [
+        { text: '个人中心', action: 'plugin', value: '/profile' },
+        { text: '签到', action: 'plugin', value: '/sign' },
+      ],
+      [
+        { text: '会员中心', action: 'plugin', value: '/member' },
+        { text: '反馈技术', action: 'reply', value: '请联系管理员反馈使用问题。' },
+      ],
+      [
+        { text: '帮助', action: 'plugin', value: '/help' },
+        { text: '管理员配置', action: 'plugin', value: '管理员配置', adminOnly: true },
+      ],
+    ]);
+    message.success('已恢复默认布局');
   }
 
   function importJson() {

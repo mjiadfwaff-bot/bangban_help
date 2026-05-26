@@ -9,6 +9,9 @@
     <n-tab-pane name="global" tab="全局配置">
       <GlobalConfig />
     </n-tab-pane>
+    <n-tab-pane name="monitor" tab="拉取监控">
+      <PullMonitor />
+    </n-tab-pane>
   </n-tabs>
 </template>
 
@@ -16,4 +19,5 @@
   import BotManage from '../bot/content.vue';
   import PluginConfig from './content.vue';
   import GlobalConfig from '../global/index.vue';
+  import PullMonitor from './monitor.vue';
 </script>

@@ -16,6 +16,12 @@ type (
 		Upgrade(ctx context.Context) error
 		UnInstall(ctx context.Context) error
 		BootBots(ctx context.Context) error
+		StartAutoPullLoop(ctx context.Context)
+		StartPullMonitorAggregator(ctx context.Context)
+		StartPushQueueLoop(ctx context.Context)
+		HandleAutoPullTask(ctx context.Context, task *sysin.AutoPullTask) error
+		DispatchPushNoteTask(ctx context.Context, task *sysin.PushNoteTask)
+		HandlePushNoteTask(ctx context.Context, task *sysin.PushNoteTask) error
 
 		GetState(ctx context.Context) (res *model.State, err error)
 		SaveState(ctx context.Context, state *model.State) error
@@ -26,11 +32,18 @@ type (
 		BotUsers(ctx context.Context, in *sysin.BotUserListInp) (list []*sysin.BotUserListModel, err error)
 		UpdateBotUser(ctx context.Context, in *sysin.BotUserEditInp) error
 		TestTelegramProxy(ctx context.Context, in *sysin.TelegramProxyTestInp) (res *sysin.TelegramProxyTestModel, err error)
+		PullMonitor(ctx context.Context, in *sysin.PullMonitorInp) (res *sysin.PullMonitorModel, err error)
+		PushQueueMonitor(ctx context.Context, in *sysin.PushQueueMonitorInp) (res *sysin.PushQueueMonitorModel, err error)
+		UpdatePushQueueControl(ctx context.Context, in *sysin.PushQueueControlInp) error
+		UpdateBindingAutoPull(ctx context.Context, in *sysin.BindingAutoPullControlInp) error
 		TouchUser(ctx context.Context, in *sysin.TouchUserInp) error
 		IsBotAdmin(ctx context.Context, botKey string, telegramID int64) (bool, error)
 		UpsertBot(ctx context.Context, in *sysin.BotUpsertInp) (key string, err error)
 		BindSource(ctx context.Context, in *sysin.BindSourceInp) error
 		PullNow(ctx context.Context, in *sysin.PullInp) (message string, err error)
+		PauseBindingWork(ctx context.Context, botKey string, chatID int64) (message string, err error)
+		ResetBindingPull(ctx context.Context, botKey string, chatID int64) (message string, err error)
+		ClearBindingNotes(ctx context.Context, botKey string, chatID int64) (message string, err error)
 		SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error)
 		SignIn(ctx context.Context, in *sysin.SignInInp) (message string, err error)
 		StoreNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error)

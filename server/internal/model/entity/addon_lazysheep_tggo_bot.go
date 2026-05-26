@@ -13,6 +13,7 @@ import (
 type AddonLazysheepTggoBot struct {
 	Id            int64       `json:"id"            orm:"id"             description:"主键"`
 	BotKey        string      `json:"botKey"        orm:"bot_key"        description:"机器人标识"`
+	Role          string      `json:"role"          orm:"role"           description:"机器人角色"`
 	MemberId      int64       `json:"memberId"      orm:"member_id"      description:"所属后台用户"`
 	Token         string      `json:"token"         orm:"token"          description:"Telegram Bot Token"`
 	BotName       string      `json:"botName"       orm:"bot_name"       description:"机器人名称"`

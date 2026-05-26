@@ -211,9 +211,13 @@ func GenFullPath(basePath, ext string) string {
 
 // write 写入附件记录
 func write(ctx context.Context, meta *FileMeta, fullPath string) (models *entity.SysAttachment, err error) {
+	appId := contexts.GetModule(ctx)
+	if strings.TrimSpace(appId) == "" {
+		appId = consts.AppDefault
+	}
 	models = &entity.SysAttachment{
 		Id:        0,
-		AppId:     contexts.GetModule(ctx),
+		AppId:     appId,
 		MemberId:  contexts.GetUserId(ctx),
 		Drive:     config.Drive,
 		Size:      meta.Size,

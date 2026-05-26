@@ -12,12 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
-	"github.com/gogf/gf/v2/frame/g"
 	"hotgo/addons/lazysheep_tggo/logic/shared"
 	"hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/addons/lazysheep_tggo/service"
+
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
+	"github.com/gogf/gf/v2/frame/g"
 )
 
 func init() {
@@ -27,6 +28,9 @@ func init() {
 	RegisterMessageHandler(&bindPublishCommand{})
 	RegisterMessageHandler(&bindCommand{})
 	RegisterMessageHandler(&pullCommand{})
+	RegisterMessageHandler(&pauseCommand{})
+	RegisterMessageHandler(&resetCommand{})
+	RegisterMessageHandler(&clearCommand{})
 	RegisterMessageHandler(&signCommand{})
 
 	RegisterCallbackHandler(&reviewApproveCallback{})
@@ -42,9 +46,14 @@ func (h *startCommand) Pattern() string          { return "start" }
 func (h *startCommand) MatchType() bot.MatchType { return bot.MatchTypeCommandStartOnly }
 func (h *startCommand) Description() string      { return "记录用户身份并欢迎关注" }
 func (h *startCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	text := ""
+	if msg := messageFromUpdate(update); msg != nil {
+		text = msg.Text
+	}
 	return Dispatch(ctx, b, &PluginRequest{
 		Trigger: TriggerStart,
 		BotKey:  currentBotKey(ctx),
+		Text:    text,
 		Update:  update,
 	})
 }
@@ -78,7 +87,7 @@ func (h *bindCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	if !pluginEnabled(ctx, "collector") {
 		return nil
 	}
-	return handleBindSource(ctx, b, update, "quick", "/bind", "/绑定", "绑定")
+	return handleBindSource(ctx, b, update, "", "/bind", "/绑定", "绑定")
 }
 
 type bindReviewCommand struct{}
@@ -155,11 +164,12 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		})
 		return err
 	}
+	sourceURL := strings.Fields(args)[0]
 	if err := service.SysLazysheepTggo().BindSource(ctx, &sysin.BindSourceInp{
 		BotKey:    botKey,
 		ChatID:    msg.Chat.ID,
 		Mode:      mode,
-		SourceURL: strings.Fields(args)[0],
+		SourceURL: sourceURL,
 	}); err != nil {
 		_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
@@ -172,9 +182,26 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 	}
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: msg.Chat.ID,
-		Text:   fmt.Sprintf("绑定已保存：%s\n\n发送 /pull 可立即采集。", strings.Fields(args)[0]),
+		Text:   collectorBindText(ctx, sourceURL),
 	})
+	if err == nil {
+		userID := int64(0)
+		if msg.From != nil {
+			userID = msg.From.ID
+		}
+		if panelErr := sendBindingConfigPanel(ctx, b, botKey, msg.Chat.ID, userID); panelErr != nil {
+			g.Log().Warningf(ctx, "发送绑定配置面板失败 bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, panelErr)
+		}
+	}
 	return err
+}
+
+func collectorBindText(ctx context.Context, sourceURL string) string {
+	text := "绑定已保存：{source}\n\n发送 pull 或 拉取 可立即拉取。\n发送 pull 10 或 拉取 10 可拉取最近 10 条消息。"
+	if cfg := currentBotPlugins(ctx)["collector"]; cfg != nil {
+		text = settingString(cfg.Settings, "quickBindText", text)
+	}
+	return strings.ReplaceAll(text, "{source}", sourceURL)
 }
 
 type pullCommand struct{}
@@ -192,19 +219,31 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 		return nil
 	}
 	botKey := currentBotKey(ctx)
-	args := commandArgs(msg.Text, "/pull", "/拉取", "拉取")
+	args := commandArgs(msg.Text, "/pull", "pull", "/拉取", "拉取")
+	if settingsKeyword(args) {
+		if err := sendBindingConfigPanel(ctx, b, botKey, msg.Chat.ID, userIDFromMessage(msg)); err != nil {
+			return err
+		}
+		return nil
+	}
 	limit := 0
 	sourceURL := ""
+	retryOld := false
 	if args != "" {
 		fields := strings.Fields(args)
 		if len(fields) > 0 {
-			if n, parseErr := strconv.Atoi(fields[0]); parseErr == nil && n > 0 {
-				limit = n
-				if len(fields) > 1 {
-					sourceURL = fields[1]
+			for _, field := range fields {
+				if pullRetryKeyword(field) {
+					retryOld = true
+					continue
 				}
-			} else {
-				sourceURL = fields[0]
+				if n, parseErr := strconv.Atoi(field); parseErr == nil && n > 0 && limit == 0 {
+					limit = n
+					continue
+				}
+				if sourceURL == "" {
+					sourceURL = field
+				}
 			}
 		}
 	}
@@ -234,6 +273,7 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 			SourceURL: sourceURL,
 			ChatID:    msg.Chat.ID,
 			Limit:     limit,
+			Retry:     retryOld,
 		})
 		if err != nil {
 			g.Log().Warningf(taskCtx, "Telegram pull task failed bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, err)
@@ -245,14 +285,115 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	return nil
 }
 
+type pauseCommand struct{}
+
+func (h *pauseCommand) Key() string              { return "pause_channel_work" }
+func (h *pauseCommand) Pattern() string          { return "暂停" }
+func (h *pauseCommand) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *pauseCommand) Description() string      { return "暂停当前频道采集和推送" }
+func (h *pauseCommand) Match(update *models.Update) bool {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return false
+	}
+	if msg.Chat.ID >= 0 {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	return text == "暂停" || text == "/暂停" || text == "取消" || text == "/取消" || strings.EqualFold(text, "pause") || strings.EqualFold(text, "cancel")
+}
+func (h *pauseCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return nil
+	}
+	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
+		return err
+	} else if !ok {
+		return sendPlainText(ctx, b, msg.Chat.ID, "只有机器人创建者可以暂停当前频道。")
+	}
+	text, err := service.SysLazysheepTggo().PauseBindingWork(ctx, currentBotKey(ctx), msg.Chat.ID)
+	if err != nil {
+		return sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("暂停失败：%v", err))
+	}
+	return sendPlainText(ctx, b, msg.Chat.ID, text)
+}
+
+type resetCommand struct{}
+
+func (h *resetCommand) Key() string              { return "reset_pull" }
+func (h *resetCommand) Pattern() string          { return "重置" }
+func (h *resetCommand) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *resetCommand) Description() string      { return "重置当前频道采集记录" }
+func (h *resetCommand) Match(update *models.Update) bool {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	return text == "重置" || text == "/重置" || strings.EqualFold(text, "reset")
+}
+func (h *resetCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return nil
+	}
+	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
+		return err
+	} else if !ok {
+		return sendPlainText(ctx, b, msg.Chat.ID, "只有机器人创建者可以重置当前频道记录。")
+	}
+	text, err := service.SysLazysheepTggo().ResetBindingPull(ctx, currentBotKey(ctx), msg.Chat.ID)
+	if err != nil {
+		return sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("重置失败：%v", err))
+	}
+	return sendPlainText(ctx, b, msg.Chat.ID, text)
+}
+
+type clearCommand struct{}
+
+func (h *clearCommand) Key() string              { return "clear_channel_notes" }
+func (h *clearCommand) Pattern() string          { return "清空" }
+func (h *clearCommand) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *clearCommand) Description() string      { return "清空当前频道笔记" }
+func (h *clearCommand) Match(update *models.Update) bool {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	return text == "清空" || text == "/清空" || text == "频道清空"
+}
+func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return nil
+	}
+	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
+		return err
+	} else if !ok {
+		return sendPlainText(ctx, b, msg.Chat.ID, "只有机器人创建者可以清空当前频道笔记。")
+	}
+	text := strings.TrimSpace(msg.Text)
+	if text != "频道清空" {
+		return sendPlainText(ctx, b, msg.Chat.ID, "清空会删除当前频道内所有已入库笔记，并重置采集记录。\n如确认，请发送：频道清空")
+	}
+	result, err := service.SysLazysheepTggo().ClearBindingNotes(ctx, currentBotKey(ctx), msg.Chat.ID)
+	if err != nil {
+		return sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("清空失败：%v", err))
+	}
+	return sendPlainText(ctx, b, msg.Chat.ID, result)
+}
+
 func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *models.Message, progressErr error, text string) {
 	sentResult := false
 	if strings.TrimSpace(text) != "" {
-		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		if sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
 			Text:   text,
 		}); err == nil {
 			sentResult = true
+			deleteMessageLater(b, chatID, sent.ID)
 		}
 	}
 	if progressErr == nil && progress != nil {
@@ -264,11 +405,13 @@ func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *
 		}
 	}
 	if !sentResult && progressErr == nil && progress != nil {
-		_, _ = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+		if _, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: progress.ID,
 			Text:      text,
-		})
+		}); err == nil {
+			deleteMessageLater(b, chatID, progress.ID)
+		}
 	}
 }
 
@@ -298,9 +441,6 @@ func resolvePullModeText(ctx context.Context, botKey, sourceURL string, chatID i
 			if sourceURL != "" && item.SourceURL != sourceURL {
 				return "采集"
 			}
-			if item.AutoPush {
-				return "快速模式"
-			}
 			if item.ReviewChatID != 0 {
 				return "审核模式"
 			}
@@ -324,11 +464,12 @@ func (h *signCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	if msg == nil {
 		return nil
 	}
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: msg.Chat.ID,
-		Text:   "签到功能已接入框架，后续会加关注校验和人机验证。",
-	})
-	return err
+	return sendSignPrompt(ctx, b, msg.Chat.ID, func() int64 {
+		if msg.From == nil {
+			return 0
+		}
+		return msg.From.ID
+	}(), currentBotKey(ctx))
 }
 
 type reviewApproveCallback struct{}
@@ -402,12 +543,85 @@ func replyCallback(ctx context.Context, b *bot.Bot, update *models.Update, text 
 	if update == nil || update.CallbackQuery == nil {
 		return nil
 	}
+	if CallbackAnswered(ctx) {
+		return nil
+	}
 	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
 		CallbackQueryID: update.CallbackQuery.ID,
 		Text:            text,
 		ShowAlert:       false,
 	})
 	return err
+}
+
+func userIDFromMessage(msg *models.Message) int64 {
+	if msg == nil || msg.From == nil {
+		return 0
+	}
+	return msg.From.ID
+}
+
+func settingsKeyword(text string) bool {
+	text = strings.TrimSpace(strings.ToLower(text))
+	return text == "设置" || text == "setting" || text == "settings" || text == "config" || text == "配置"
+}
+
+func pullRetryKeyword(text string) bool {
+	text = strings.TrimSpace(strings.ToLower(text))
+	return text == "重试" || text == "retry" || text == "force" || text == "重新拉取"
+}
+
+func ensureBotCreator(ctx context.Context, botKey string, userID int64) (bool, error) {
+	if strings.TrimSpace(botKey) == "" || userID == 0 {
+		return false, nil
+	}
+	state, err := service.SysLazysheepTggo().GetState(ctx)
+	if err != nil {
+		return false, err
+	}
+	cfg := state.Bots[botKey]
+	return cfg != nil && cfg.MemberId == userID, nil
+}
+
+func ensureBotCreatorForChat(ctx context.Context, botKey string, msg *models.Message) (bool, error) {
+	if msg == nil {
+		return false, nil
+	}
+	if userID := userIDFromMessage(msg); userID > 0 {
+		return ensureBotCreator(ctx, botKey, userID)
+	}
+	if msg.SenderChat != nil && msg.SenderChat.ID == msg.Chat.ID {
+		state, err := service.SysLazysheepTggo().GetState(ctx)
+		if err != nil {
+			return false, err
+		}
+		return findBindingByChat(state, botKey, msg.Chat.ID) != nil, nil
+	}
+	return false, nil
+}
+
+func sendPlainText(ctx context.Context, b *bot.Bot, chatID int64, text string) error {
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   text,
+	})
+	if err == nil && sent != nil {
+		deleteMessageLater(b, chatID, sent.ID)
+	}
+	return err
+}
+
+func deleteMessageLater(b *bot.Bot, chatID int64, messageID int) {
+	if b == nil || chatID == 0 || messageID == 0 {
+		return
+	}
+	go func() {
+		time.Sleep(3 * time.Minute)
+		_, _ = b.DeleteMessage(context.Background(), &bot.DeleteMessageParams{
+			ChatID:    chatID,
+			MessageID: messageID,
+		})
+	}()
 }
 
 func currentBotKey(ctx context.Context) string {

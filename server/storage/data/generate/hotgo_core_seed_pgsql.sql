@@ -53,5 +53,6 @@ INSERT INTO hg_admin_menu (id, pid, level, tree, title, name, path, icon, type, 
 (3001, 3000, 2, 'tr_3000 ', '懒羊羊TGGo', 'addons_lazysheep_tggo', 'lazysheep_tggo', '', 1, '/addons/lazysheep_tggo/bot', '', '', 'ParentLayout', 1, '', 0, 0, '', 0, 0, 0, 10, '', 1, NOW(), NOW()),
 (3002, 3001, 3, 'tr_3000 tr_3001 ', '机器人管理', 'addons_lazysheep_tggo_bot', 'bot', '', 2, '', '/lazysheep_tggo/config/get,/lazysheep_tggo/config/update,/lazysheep_tggo/config/deleteBot,/lazysheep_tggo/config/startBot,/lazysheep_tggo/config/botUsers,/lazysheep_tggo/config/updateBotUser', '', '/addons/lazysheep_tggo/bot/index', 0, '', 0, 0, '', 0, 0, 0, 10, '', 1, NOW(), NOW()),
 (3003, 3001, 3, 'tr_3000 tr_3001 ', '插件配置', 'addons_lazysheep_tggo_config', 'config', '', 2, '', '/lazysheep_tggo/config/get,/lazysheep_tggo/config/update', '', '/addons/lazysheep_tggo/config/system', 0, '', 0, 0, '', 0, 0, 0, 20, '', 1, NOW(), NOW()),
-(3004, 3001, 3, 'tr_3000 tr_3001 ', '全局配置', 'addons_lazysheep_tggo_global', 'global', '', 2, '', '', '', '/addons/lazysheep_tggo/global/index', 0, '', 0, 0, '', 0, 0, 0, 30, '', 1, NOW(), NOW())
+(3004, 3001, 3, 'tr_3000 tr_3001 ', '全局配置', 'addons_lazysheep_tggo_global', 'global', '', 2, '', '', '', '/addons/lazysheep_tggo/global/index', 0, '', 0, 0, '', 0, 0, 0, 30, '', 1, NOW(), NOW()),
+(3005, 3001, 3, 'tr_3000 tr_3001 ', '拉取监控', 'addons_lazysheep_tggo_pull_monitor', 'pull-monitor', '', 2, '', '/lazysheep_tggo/config/pullMonitor', '', '/addons/lazysheep_tggo/config/pull-monitor', 0, '', 0, 0, '', 0, 0, 0, 40, '', 1, NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;

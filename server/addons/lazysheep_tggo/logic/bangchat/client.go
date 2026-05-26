@@ -230,6 +230,9 @@ func loadResolvedToken(ctx context.Context, key string) string {
 	if key == "" {
 		return ""
 	}
+	defer func() {
+		_ = recover()
+	}()
 	val, err := cache.Instance().Get(ctx, key)
 	if err != nil || val.IsNil() {
 		return ""
@@ -241,6 +244,9 @@ func saveResolvedToken(ctx context.Context, key, token string) {
 	if key == "" || strings.TrimSpace(token) == "" {
 		return
 	}
+	defer func() {
+		_ = recover()
+	}()
 	_ = cache.Instance().Set(ctx, key, strings.TrimSpace(token), time.Hour*24)
 }
 
@@ -353,13 +359,11 @@ func (c *Client) CollectMessagePages(ctx context.Context, pairID string, limit i
 		if limit > 0 && limit-collected < pageLimit {
 			pageLimit = limit - collected
 		}
-		pageResp, err := c.signedPost(ctx, "/v1.Message/List", map[string]any{
-			"pair_id":       pairID,
-			"max_id":        maxID,
-			"include_quote": true,
-			"pager":         map[string]any{"limit": pageLimit},
-		})
+		pageResp, err := c.messageListPage(ctx, pairID, maxID, pageLimit)
 		if err != nil {
+			if isTransientHTTPError(err) && collected > 0 {
+				break
+			}
 			return err
 		}
 		var parsed struct {
@@ -370,8 +374,11 @@ func (c *Client) CollectMessagePages(ctx context.Context, pairID string, limit i
 				List []json.RawMessage `json:"list"`
 			} `json:"data"`
 		}
+		if !strings.HasPrefix(strings.TrimSpace(pageResp), "{") && !strings.HasPrefix(strings.TrimSpace(pageResp), "[") {
+			return fmt.Errorf("message page returned non-json response: %s", abbreviate(pageResp, 80))
+		}
 		if err := json.Unmarshal([]byte(pageResp), &parsed); err != nil {
-			return fmt.Errorf("parse message page failed: %w: %s", err, pageResp)
+			return fmt.Errorf("parse message page failed: %w: %s", err, abbreviate(pageResp, 200))
 		}
 		list := parsed.List
 		if len(list) == 0 && len(parsed.Data.List) > 0 {
@@ -414,6 +421,38 @@ func (c *Client) CollectMessagePages(ctx context.Context, pairID string, limit i
 	return nil
 }
 
+func (c *Client) messageListPage(ctx context.Context, pairID string, maxID int64, pageLimit int) (string, error) {
+	var lastErr error
+	for _, limit := range fallbackPageLimits(pageLimit) {
+		resp, err := c.signedPost(ctx, "/v1.Message/List", map[string]any{
+			"pair_id":       pairID,
+			"max_id":        maxID,
+			"include_quote": true,
+			"pager":         map[string]any{"limit": limit},
+		})
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isTransientHTTPError(err) {
+			break
+		}
+	}
+	return "", lastErr
+}
+
+func fallbackPageLimits(pageLimit int) []int {
+	if pageLimit <= 10 {
+		return []int{pageLimit}
+	}
+	limits := []int{pageLimit}
+	if pageLimit > 20 {
+		limits = append(limits, 20)
+	}
+	limits = append(limits, 10)
+	return limits
+}
+
 func getPublicKey(ctx context.Context) (string, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiBaseURL+"/v1.Setting/GetPublicKey", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
@@ -441,6 +480,33 @@ func getPublicKey(ctx context.Context) (string, error) {
 }
 
 func (c *Client) signedPost(ctx context.Context, apiPath string, payload any) (string, error) {
+	return c.signedPostWithRetry(ctx, apiPath, payload, 3)
+}
+
+func (c *Client) signedPostWithRetry(ctx context.Context, apiPath string, payload any, attempts int) (string, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		body, err := c.signedPostOnce(ctx, apiPath, payload)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !isTransientHTTPError(err) || i == attempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Duration(i+1) * 800 * time.Millisecond):
+		}
+	}
+	return "", lastErr
+}
+
+func (c *Client) signedPostOnce(ctx context.Context, apiPath string, payload any) (string, error) {
 	req, random, err := c.newSignedRequest(ctx, apiPath, payload)
 	if err != nil {
 		return "", err
@@ -451,11 +517,32 @@ func (c *Client) signedPost(ctx context.Context, apiPath string, payload any) (s
 		return "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if dec, derr := xorBase64Decode(string(raw), []byte(random)); derr == nil {
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if dec, derr := xorBase64Decode(string(raw), []byte(random)); derr == nil && looksLikeJSON(dec) {
 		return string(dec), nil
 	}
 	return string(raw), nil
+}
+
+func isTransientHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "unexpected eof") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "broken pipe") ||
+		strings.Contains(text, "server closed idle connection")
 }
 
 func (c *Client) newSignedRequest(ctx context.Context, apiPath string, payload any) (*http.Request, string, error) {
@@ -551,7 +638,14 @@ func xorBase64(plain []byte, key []byte) string {
 }
 
 func xorBase64Decode(enc string, key []byte) ([]byte, error) {
+	enc = strings.TrimSpace(enc)
 	raw, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(enc)
+	}
+	if err != nil {
+		raw, err = base64.RawURLEncoding.DecodeString(enc)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -560,6 +654,11 @@ func xorBase64Decode(enc string, key []byte) ([]byte, error) {
 		out[i] = raw[i] ^ key[i%len(key)]
 	}
 	return out, nil
+}
+
+func looksLikeJSON(raw []byte) bool {
+	text := strings.TrimSpace(string(raw))
+	return strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[")
 }
 
 func randomString(n int) string {
@@ -644,4 +743,12 @@ func rawMessageID(raw json.RawMessage) string {
 		return ""
 	}
 	return firstNonEmpty(v.ID, v.UpID)
+}
+
+func abbreviate(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	return text[:max] + "..."
 }

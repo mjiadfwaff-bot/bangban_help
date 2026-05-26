@@ -36,6 +36,7 @@ type AddonLazysheepTggoBindingColumns struct {
 	PublishEnabled  string // 推送开关
 	VerifyEnabled   string // 验证按钮开关
 	LocationEnabled string // 位置按钮开关
+	PluginSettings  string // 插件状态
 	LastPullId      string // 最后拉取ID
 	LastCursor      string // 最后游标
 	Status          string // 状态
@@ -62,6 +63,7 @@ var addonLazysheepTggoBindingColumns = AddonLazysheepTggoBindingColumns{
 	PublishEnabled:  "publish_enabled",
 	VerifyEnabled:   "verify_enabled",
 	LocationEnabled: "location_enabled",
+	PluginSettings:  "plugin_settings",
 	LastPullId:      "last_pull_id",
 	LastCursor:      "last_cursor",
 	Status:          "status",

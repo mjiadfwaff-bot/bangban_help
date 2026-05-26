@@ -9,12 +9,14 @@ import (
 	"github.com/go-telegram/bot/models"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
+	"hotgo/internal/library/cache"
 )
 
 func (s *sLazySheepTGGo) saveWebhookLog(ctx context.Context, botKey string, payload []byte, update *models.Update) {
 	if strings.TrimSpace(botKey) == "" || len(payload) == 0 {
 		return
 	}
+	s.rememberTelegramChat(ctx, botKey, update)
 	updateType, chatID, userID, username, messageID, summary := summarizeWebhookUpdate(update)
 	if update != nil && update.ID != 0 && updateType == "" {
 		updateType = "unknown"
@@ -26,6 +28,80 @@ func (s *sLazySheepTGGo) saveWebhookLog(ctx context.Context, botKey string, payl
 	`, botKey, updateID(update), updateType, chatID, userID, username, messageID, summary, string(payload), gtime.Now(), gtime.Now())
 	if err != nil {
 		g.Log().Warningf(ctx, "保存 webhook 原始日志失败 botKey:%s err:%+v", botKey, err)
+	}
+}
+
+func (s *sLazySheepTGGo) rememberTelegramChat(ctx context.Context, botKey string, update *models.Update) {
+	chat, ok := telegramChatFromUpdate(update)
+	if !ok || chat.ID == 0 {
+		return
+	}
+	if err := s.ensureChatMapTable(ctx); err != nil {
+		g.Log().Warningf(ctx, "初始化频道映射表失败 botKey:%s chat:%d err:%+v", botKey, chat.ID, err)
+		return
+	}
+	title := strings.TrimSpace(chat.Title)
+	if title == "" {
+		title = strings.TrimSpace(strings.TrimSpace(chat.FirstName + " " + chat.LastName))
+	}
+	username := strings.TrimPrefix(strings.TrimSpace(chat.Username), "@")
+	label := title
+	if label == "" && username != "" {
+		label = "@" + username
+	}
+	if label == "" {
+		label = fmt.Sprintf("%d", chat.ID)
+	}
+	now := gtime.Now()
+	if g.DB().GetConfig().Type == "pgsql" {
+		_, _ = g.DB().Exec(ctx, `
+			INSERT INTO hg_addon_lazysheep_tggo_chat_map
+			(bot_key, chat_id, chat_type, title, username, label, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (bot_key, chat_id) DO UPDATE SET
+			chat_type=EXCLUDED.chat_type,title=EXCLUDED.title,username=EXCLUDED.username,label=EXCLUDED.label,updated_at=EXCLUDED.updated_at
+		`, botKey, chat.ID, string(chat.Type), title, username, label, now, now)
+		_, _ = cache.Instance().Remove(ctx, monitorChatMapCacheKey)
+		return
+	}
+	_, _ = g.DB().Exec(ctx, `
+		INSERT INTO hg_addon_lazysheep_tggo_chat_map
+		(bot_key, chat_id, chat_type, title, username, label, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE chat_type=VALUES(chat_type),title=VALUES(title),username=VALUES(username),label=VALUES(label),updated_at=VALUES(updated_at)
+	`, botKey, chat.ID, string(chat.Type), title, username, label, now, now)
+	_, _ = cache.Instance().Remove(ctx, monitorChatMapCacheKey)
+}
+
+func telegramChatFromUpdate(update *models.Update) (models.Chat, bool) {
+	if update == nil {
+		return models.Chat{}, false
+	}
+	switch {
+	case update.Message != nil:
+		return update.Message.Chat, true
+	case update.EditedMessage != nil:
+		return update.EditedMessage.Chat, true
+	case update.ChannelPost != nil:
+		return update.ChannelPost.Chat, true
+	case update.EditedChannelPost != nil:
+		return update.EditedChannelPost.Chat, true
+	case update.BusinessMessage != nil:
+		return update.BusinessMessage.Chat, true
+	case update.EditedBusinessMessage != nil:
+		return update.EditedBusinessMessage.Chat, true
+	case update.CallbackQuery != nil && update.CallbackQuery.Message.Message != nil:
+		return update.CallbackQuery.Message.Message.Chat, true
+	case update.CallbackQuery != nil && update.CallbackQuery.Message.InaccessibleMessage != nil:
+		return update.CallbackQuery.Message.InaccessibleMessage.Chat, true
+	case update.MyChatMember != nil:
+		return update.MyChatMember.Chat, true
+	case update.ChatMember != nil:
+		return update.ChatMember.Chat, true
+	case update.ChatJoinRequest != nil:
+		return update.ChatJoinRequest.Chat, true
+	default:
+		return models.Chat{}, false
 	}
 }
 

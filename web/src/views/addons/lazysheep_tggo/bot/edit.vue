@@ -23,11 +23,8 @@
       <n-form-item label="启用机器人">
         <n-switch v-model:value="formValue.enabled" />
       </n-form-item>
-      <n-form-item label="启用审核">
-        <n-switch v-model:value="formValue.reviewEnabled" />
-      </n-form-item>
       <n-alert :show-icon="false" type="info">
-        本地开发默认走 polling 或手动拉取；Webhook 需要公网 HTTPS 域名，生产环境再配置。
+        官方机器人会在保存后用于菜单绑定、插件入口和用户交互；本地开发默认走 polling 或手动拉取。
       </n-alert>
     </n-form>
     <template #action>
@@ -51,11 +48,13 @@
   const showModal = ref(false);
   const loading = ref(false);
   const isEdit = ref(false);
+  const originalToken = ref('');
   const formValue = ref<BotRow>(newBotRow());
 
   function openModal(record?: BotRow) {
     isEdit.value = !!record?.key;
     formValue.value = newBotRow(record || {});
+    originalToken.value = formValue.value.token || '';
     showModal.value = true;
   }
 
@@ -71,12 +70,17 @@
       }
       loading.value = true;
       try {
-        const info = await inspectBot({ token: formValue.value.token });
-        formValue.value.displayName = info?.displayName || formValue.value.displayName;
-        formValue.value.username = info?.username || formValue.value.username;
-        emit('submit', { ...formValue.value }, () => {
+        const tokenChanged = (formValue.value.token || '') !== originalToken.value;
+        if (tokenChanged) {
+          const info = await inspectBot({ token: formValue.value.token });
+          formValue.value.displayName = info?.displayName || formValue.value.displayName;
+          formValue.value.username = info?.username || formValue.value.username;
+        }
+        emit('submit', { ...formValue.value }, (ok = true) => {
           loading.value = false;
-          closeModal();
+          if (ok) {
+            closeModal();
+          }
         });
       } catch (e) {
         loading.value = false;

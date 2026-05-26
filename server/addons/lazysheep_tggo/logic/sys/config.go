@@ -8,7 +8,9 @@ package sys
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,7 +18,6 @@ import (
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 	"hotgo/addons/lazysheep_tggo/logic/bangchat"
-	"hotgo/addons/lazysheep_tggo/logic/shared"
 	"hotgo/addons/lazysheep_tggo/model"
 	lsysin "hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/addons/lazysheep_tggo/service"
@@ -65,7 +66,11 @@ func (s *sLazySheepTGGo) GetState(ctx context.Context) (res *model.State, err er
 }
 
 func (s *sLazySheepTGGo) SaveState(ctx context.Context, state *model.State) error {
-	return s.saveState(ctx, state)
+	if err := s.saveState(ctx, state); err != nil {
+		return err
+	}
+	clearAutoPullBindingsCache(ctx)
+	return nil
 }
 
 func (s *sLazySheepTGGo) SaveConfig(ctx context.Context, in *lsysin.UpdateConfigInp) error {
@@ -75,10 +80,16 @@ func (s *sLazySheepTGGo) SaveConfig(ctx context.Context, in *lsysin.UpdateConfig
 	state := in.ToState()
 	switch in.Group {
 	case "plugins":
-		return s.savePluginConfig(ctx, state)
+		if err := s.savePluginConfig(ctx, state); err != nil {
+			return err
+		}
 	default:
-		return s.saveState(ctx, state)
+		if err := s.saveState(ctx, state); err != nil {
+			return err
+		}
 	}
+	clearAutoPullBindingsCache(ctx)
+	return nil
 }
 
 func (s *sLazySheepTGGo) InspectBot(ctx context.Context, in *lsysin.BotInspectInp) (*lsysin.BotInspectModel, error) {
@@ -139,20 +150,59 @@ func (s *sLazySheepTGGo) IsBotAdmin(ctx context.Context, botKey string, telegram
 }
 
 func (s *sLazySheepTGGo) UpsertBot(ctx context.Context, in *lsysin.BotUpsertInp) (key string, err error) {
+	if in == nil {
+		return "", gerror.New("机器人配置不能为空")
+	}
 	key = in.Key
 	if key == "" {
 		key = shortHash(in.Token)
 	}
-	err = s.upsertBot(ctx, key, &model.BotConfig{
+	if state, stateErr := s.GetState(ctx); stateErr == nil && state != nil {
+		if existing := state.Bots[key]; existing != nil && strings.TrimSpace(existing.Token) == strings.TrimSpace(in.Token) {
+			if strings.TrimSpace(in.Username) == "" {
+				in.Username = existing.Username
+			}
+			if strings.TrimSpace(in.DisplayName) == "" {
+				in.DisplayName = existing.DisplayName
+			}
+		}
+	}
+	if strings.TrimSpace(in.Token) != "" && (strings.TrimSpace(in.Username) == "" || strings.TrimSpace(in.DisplayName) == "") {
+		if info, inspectErr := s.inspectBot(ctx, &lsysin.BotInspectInp{Token: in.Token}); inspectErr == nil && info != nil {
+			if strings.TrimSpace(in.Username) == "" {
+				in.Username = info.Username
+			}
+			if strings.TrimSpace(in.DisplayName) == "" {
+				in.DisplayName = info.DisplayName
+			}
+		}
+	}
+	cfg := &model.BotConfig{
 		Key:           key,
+		Role:          in.Role,
+		MemberId:      in.MemberId,
 		Token:         in.Token,
 		DisplayName:   in.DisplayName,
+		Username:      in.Username,
+		WebhookSecret: in.WebhookSecret,
+		WebhookPath:   in.WebhookPath,
 		Enabled:       in.Enabled,
 		AutoPull:      in.AutoPull,
 		AutoForward:   in.AutoForward,
 		ReviewEnabled: in.ReviewEnabled,
-	}, nil)
-	return key, err
+	}
+	s.normalizeBotConfig(key, cfg)
+	g.Log().Debugf(ctx, "保存机器人配置 botKey:%s role:%s enabled:%t username:%s", key, cfg.Role, cfg.Enabled, cfg.Username)
+	if err = s.ensureBotRoleField(ctx); err != nil {
+		return key, err
+	}
+	if err = s.upsertBot(ctx, key, cfg, nil); err != nil {
+		return key, err
+	}
+	if err = s.syncBotAfterSave(ctx, key); err != nil {
+		return key, err
+	}
+	return key, nil
 }
 
 func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceInp) error {
@@ -163,10 +213,10 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 	if sourceURL == "" {
 		return gerror.New("BangChat 链接不能为空")
 	}
-	mode := strings.TrimSpace(in.Mode)
-	if mode == "" {
-		mode = "quick"
+	if err := validateBangchatSourceURL(sourceURL); err != nil {
+		return err
 	}
+	mode := strings.TrimSpace(in.Mode)
 	reviewChatID := in.ReviewChatID
 	publishChatID := in.PublishChatID
 	autoPush := in.AutoPush
@@ -174,13 +224,28 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 		if mode == "review" {
 			reviewChatID = in.ChatID
 			autoPush = false
-		} else {
+		} else if mode == "publish" || autoPush {
 			publishChatID = in.ChatID
 			autoPush = true
+		} else if reviewChatID == 0 && publishChatID == 0 {
+			reviewChatID = in.ChatID
+			autoPush = false
 		}
 	}
-	key := fmt.Sprintf("%s:%d:%s", in.BotKey, in.ChatID, sourceURL)
-	return s.upsertBinding(ctx, key, &model.BindingRecord{
+	key := fmt.Sprintf("%s:%d", in.BotKey, in.ChatID)
+	pluginState := s.defaultBindingPluginState(ctx, in.BotKey)
+	var lastPullID int64
+	var lastCursor string
+	if existing, findErr := s.findBinding(ctx, in.BotKey, sourceURL, in.ChatID); findErr == nil && existing != nil {
+		if len(existing.PluginState) > 0 {
+			pluginState = existing.PluginState
+		}
+		if strings.TrimSpace(existing.SourceURL) == sourceURL {
+			lastPullID = existing.LastPullID
+			lastCursor = existing.LastCursor
+		}
+	}
+	if err := s.upsertBinding(ctx, key, &model.BindingRecord{
 		Key:             key,
 		BotKey:          in.BotKey,
 		SourceURL:       sourceURL,
@@ -191,10 +256,29 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 		AutoPush:        autoPush,
 		VerifyEnabled:   true,
 		LocationEnabled: true,
-	})
+		PluginState:     pluginState,
+		LastPullID:      lastPullID,
+		LastCursor:      lastCursor,
+	}); err != nil {
+		return err
+	}
+	clearAutoPullBindingsCache(ctx)
+	return nil
+}
+
+func validateBangchatSourceURL(sourceURL string) error {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(sourceURL))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return gerror.New("BangChat 链接格式不正确，请输入完整的 http/https 地址")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return gerror.New("BangChat 链接必须是 http 或 https 地址")
+	}
+	return nil
 }
 
 func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (message string, err error) {
+	started := time.Now()
 	if in == nil || in.BotKey == "" {
 		return "", gerror.New("botKey 不能为空")
 	}
@@ -205,7 +289,18 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	if binding == nil {
 		return "", gerror.New("未找到可触发的绑定关系")
 	}
-	pullKey := fmt.Sprintf("lazysheep_tggo:pull:%s:%d:%s", in.BotKey, in.ChatID, shortHash(binding.SourceURL))
+	traceID := shortHash(fmt.Sprintf("%s:%d:%s:%d", in.BotKey, in.ChatID, binding.SourceURL, time.Now().UnixNano()))
+	ctx = withPullTrace(ctx, traceID)
+	var summary *pullSummary
+	var timer *pullTimer
+	defer func() {
+		var steps []lsysin.PullMonitorStep
+		if timer != nil {
+			steps = timer.Steps()
+		}
+		recordPullMonitorEvent(ctx, newPullMonitorEvent(ctx, in, binding.Key, binding.SourceURL, in.Auto, started, steps, summary, message, err))
+	}()
+	pullKey := fmt.Sprintf("lazysheep_tggo:pull:%s:%s", in.BotKey, binding.Key)
 	mutex := lock.Mutex(pullKey)
 	if lockErr := mutex.TryLock(ctx); lockErr != nil {
 		if gerror.Is(lockErr, lock.ErrLockFailed) {
@@ -218,65 +313,79 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 			g.Log().Warningf(ctx, "释放采集执行锁失败 key:%s err:%+v", pullKey, unlockErr)
 		}
 	}()
+	ctx, unregisterPull := registerRunningPull(ctx, in.BotKey, binding)
+	defer unregisterPull()
 
 	limit := in.Limit
+	timer = newPullTimer(ctx)
 	if err = s.configureBangchatProxy(ctx); err != nil {
 		return "", err
 	}
-	g.Log().Debugf(ctx, "开始 BangChat 采集 botKey:%s binding:%s source:%s limit:%d autoPush:%t", in.BotKey, binding.Key, binding.SourceURL, limit, binding.AutoPush)
-	summary := &pullSummary{}
-	maxContentID := binding.LastPullID
-	latestCursor := binding.LastCursor
+	timer.Report("代理配置完成。")
+	g.Log().Debugf(ctx, "%s 开始 BangChat 采集 botKey:%s binding:%s source:%s limit:%d autoPush:%t", pullTraceTag(ctx), in.BotKey, binding.Key, binding.SourceURL, limit, binding.AutoPush)
+	summary = &pullSummary{}
+	dedupScope := pullDedupScope(in.BotKey, binding, in.ChatID)
+	successMaxContentID := binding.LastPullID
+	successLatestCursor := binding.LastCursor
 	batchSeen := make(map[string]struct{})
 	processed := 0
-	if binding.AutoPush {
-		rt := s.runtime.get(in.BotKey)
-		if rt == nil || rt.client == nil {
-			return "", gerror.New("机器人运行实例不存在，请先启动机器人")
-		}
+	noteProcessed := 0
+	pullLimit := limit
+	if limit > 0 {
+		pullLimit = 0
 	}
-	pairID, err := bangchat.PullPages(ctx, bangchat.PullOption{URL: binding.SourceURL, Limit: limit, MaxPages: 0, PageSize: 50}, func(page *bangchat.PullPage) error {
+	pairID, err := bangchat.PullPages(ctx, bangchat.PullOption{URL: binding.SourceURL, Limit: pullLimit, MaxPages: 0, PageSize: 50}, func(page *bangchat.PullPage) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if page == nil {
 			return nil
 		}
 		if summary.PairID == "" {
 			summary.PairID = page.PairID
 		}
-		summary.Fetched += len(page.Messages)
-		pageMaxContentID, pageLatestCursor := pullCursorFromMessages(page.Messages)
-		if pageMaxContentID > maxContentID {
-			maxContentID = pageMaxContentID
-			latestCursor = pageLatestCursor
-		}
-		g.Log().Debugf(ctx, "BangChat 采集页完成 botKey:%s binding:%s pair:%s page:%d fetched:%d total:%d", in.BotKey, binding.Key, page.PairID, page.Page, len(page.Messages), summary.Fetched)
-		shared.ReportPullProgress(ctx, fmt.Sprintf("已拉取第 %d 页 %d 条，开始处理...", page.Page, len(page.Messages)))
+		summary.RawFetched += len(page.Messages)
+		g.Log().Debugf(ctx, "%s BangChat 采集页完成 botKey:%s binding:%s pair:%s page:%d fetched:%d total:%d", pullTraceTag(ctx), in.BotKey, binding.Key, page.PairID, page.Page, len(page.Messages), summary.RawFetched)
+		timer.Report("已拉取第 %d 页 %d 条，开始处理...", page.Page, len(page.Messages))
 		for idx, raw := range page.Messages {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			processed++
 			if limit > 0 {
-				shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d/%d 条...", processed, limit))
+				timer.Report("正在处理第 %d/%d 条...", processed, limit)
 			} else {
-				shared.ReportPullProgress(ctx, fmt.Sprintf("正在处理第 %d 页第 %d 条，累计 %d 条...", page.Page, idx+1, processed))
+				timer.Report("正在处理第 %d 页第 %d 条，累计 %d 条...", page.Page, idx+1, processed)
 			}
 			if !isBangchatNote(raw) {
-				summary.Skipped++
+				summary.NonNotes++
 				continue
 			}
+			if limit > 0 && noteProcessed >= limit {
+				return errPullNoteLimitReached
+			}
+			noteProcessed++
+			summary.Fetched++
 			var msg sourceMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				summary.Failed++
-				g.Log().Warningf(ctx, "解析快速采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				summary.AddError("解析采集消息失败", err)
+				g.Log().Warningf(ctx, "解析采集消息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				continue
 			}
 			g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s page:%d index:%d contentID:%s autoPush:%t", in.BotKey, binding.Key, page.Page, idx+1, msg.ContentId, binding.AutoPush)
 			contentID := parseInt(msg.ContentId)
-			if binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
+			if !in.Retry && binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
 				summary.Skipped++
-				continue
+				summary.OldCursorSkipped++
+				timer.Report("跳过旧笔记 contentID:%s lastPullID:%d。", msg.ContentId, binding.LastPullID)
+				return errPullOldCursorReached
 			}
 			var note noteContent
 			if err := json.Unmarshal([]byte(msg.Content), &note); err != nil {
 				summary.Failed++
-				g.Log().Warningf(ctx, "解析快速采集笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+				summary.AddError(fmt.Sprintf("解析采集笔记失败 contentID:%s", msg.ContentId), err)
+				g.Log().Warningf(ctx, "解析采集笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				continue
 			}
 			fingerprint, sourceURLs := noteFingerprint(note)
@@ -285,34 +394,18 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 					summary.Deduped++
 					continue
 				}
-				seen, seenErr := pullDedupSeen(ctx, in.BotKey, fingerprint)
+				seen, seenErr := pullDedupSeen(ctx, dedupScope, fingerprint)
 				if seenErr != nil {
 					return seenErr
 				}
 				if seen {
 					summary.Deduped++
+					timer.Report("当前频道发现重复笔记，已跳过。")
 					continue
 				}
-			}
-			if binding.AutoPush {
-				if pushErr := retryPullAction(ctx, fmt.Sprintf("快速推送 botKey:%s binding:%s contentID:%s", in.BotKey, binding.Key, msg.ContentId), func() error {
-					return s.pushQuickCollectedNote(ctx, in.BotKey, binding, raw, in.ChatID)
-				}); pushErr != nil {
-					summary.Failed++
-					g.Log().Warningf(ctx, "快速推送 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, pushErr)
-					continue
-				}
-				summary.QuickPushed++
-				if fingerprint != "" {
-					batchSeen[fingerprint] = struct{}{}
-					if err := pullDedupRemember(ctx, in.BotKey, fingerprint, 0, sourceURLs); err != nil {
-						g.Log().Warningf(ctx, "记录快速采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
-					}
-				}
-				continue
 			}
 			var stored *lsysin.NoteStoreModel
-			if storeErr := retryPullAction(ctx, fmt.Sprintf("保存/推送 botKey:%s binding:%s contentID:%s", in.BotKey, binding.Key, msg.ContentId), func() error {
+			if storeErr := retryPullAction(ctx, fmt.Sprintf("保存 botKey:%s binding:%s contentID:%s", in.BotKey, binding.Key, msg.ContentId), func() error {
 				res, err := s.StoreNote(ctx, &lsysin.NoteStoreInp{
 					BotKey:     in.BotKey,
 					BindingKey: binding.Key,
@@ -322,36 +415,132 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 					return err
 				}
 				stored = res
-				return s.pushCollectedNote(ctx, in.BotKey, binding, res.NoteId, in.ChatID)
+				return nil
 			}); storeErr != nil {
 				summary.Failed++
-				g.Log().Warningf(ctx, "保存 BangChat 笔记失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, storeErr)
+				summary.AddError(fmt.Sprintf("保存失败 contentID:%s", msg.ContentId), storeErr)
+				g.Log().Warningf(ctx, "%s 保存 BangChat 笔记失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, storeErr)
 				continue
 			}
 			summary.Stored++
-			summary.Pushed++
+			if stored == nil {
+				summary.Failed++
+				summary.AddError(fmt.Sprintf("保存失败 contentID:%s", msg.ContentId), gerror.New("笔记保存结果为空"))
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if _, pushErr := s.enqueuePushNote(ctx, in.BotKey, binding, stored.NoteId, contentID, in.ChatID); pushErr != nil {
+				summary.PushFailed++
+				summary.AddError(fmt.Sprintf("推送入队失败 contentID:%s", msg.ContentId), pushErr)
+				g.Log().Warningf(ctx, "%s BangChat 笔记推送任务入队失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, pushErr)
+				continue
+			}
+			summary.PushQueued++
+			if contentID > successMaxContentID {
+				successMaxContentID = contentID
+				successLatestCursor = msg.Id
+			}
+			timer.Report("入库并加入推送队列完成 contentID:%s。", msg.ContentId)
 			if fingerprint != "" && stored != nil {
 				batchSeen[fingerprint] = struct{}{}
-				if err := pullDedupRemember(ctx, in.BotKey, fingerprint, stored.NoteId, sourceURLs); err != nil {
+				if err := pullDedupRemember(ctx, dedupScope, fingerprint, stored.NoteId, sourceURLs); err != nil {
 					g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				}
 			}
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errPullNoteLimitReached) && !errors.Is(err, errPullOldCursorReached) {
+		if errors.Is(err, context.Canceled) {
+			return timer.Append("采集已暂停。"), nil
+		}
 		return "", gerror.Wrap(err, "采集 BangChat 消息失败")
 	}
 	if summary.PairID == "" {
 		summary.PairID = pairID
 	}
-	g.Log().Debugf(ctx, "BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d", in.BotKey, binding.Key, summary.PairID, summary.Fetched)
-	if maxContentID > binding.LastPullID {
-		if err := s.updateBindingPullState(ctx, binding.Key, maxContentID, latestCursor); err != nil {
-			g.Log().Warningf(ctx, "更新采集游标失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
+	g.Log().Debugf(ctx, "%s BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d summary:%s", pullTraceTag(ctx), in.BotKey, binding.Key, summary.PairID, summary.Fetched, summary.Message())
+	if successMaxContentID > binding.LastPullID {
+		if err := s.updateBindingPullState(ctx, binding.Key, successMaxContentID, successLatestCursor); err != nil {
+			g.Log().Warningf(ctx, "%s 更新采集游标失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, err)
 		}
 	}
-	return summary.Message(), nil
+	if in.Auto {
+		s.updateAutoPullIdleState(ctx, binding, summary.Stored > 0 || summary.PushQueued > 0)
+	}
+	return timer.Append(summary.Message()), nil
+}
+
+func (s *sLazySheepTGGo) ResetBindingPull(ctx context.Context, botKey string, chatID int64) (message string, err error) {
+	binding, err := s.findBinding(ctx, botKey, "", chatID)
+	if err != nil {
+		return "", err
+	}
+	if binding == nil {
+		return "", gerror.New("当前频道还没有绑定关系")
+	}
+	if err = s.updateBindingPullState(ctx, binding.Key, 0, ""); err != nil {
+		return "", err
+	}
+	if err = clearPullDedupScope(ctx, pullDedupScope(botKey, binding, chatID)); err != nil {
+		g.Log().Warningf(ctx, "清理采集去重缓存失败 bot:%s binding:%s err:%+v", botKey, binding.Key, err)
+	}
+	if err = s.clearPushChannelState(ctx, botKey, binding, chatID); err != nil {
+		g.Log().Warningf(ctx, "清理频道推送状态失败 bot:%s binding:%s err:%+v", botKey, binding.Key, err)
+	}
+	return "当前频道采集记录已重置，可以重新拉取。", nil
+}
+
+func (s *sLazySheepTGGo) ClearBindingNotes(ctx context.Context, botKey string, chatID int64) (message string, err error) {
+	binding, err := s.findBinding(ctx, botKey, "", chatID)
+	if err != nil {
+		return "", err
+	}
+	if binding == nil {
+		return "", gerror.New("当前频道还没有绑定关系")
+	}
+	noteCols := dao.AddonLazysheepTggoNote.Columns()
+	itemCols := dao.AddonLazysheepTggoNoteItem.Columns()
+	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	bindingCols := dao.AddonLazysheepTggoBinding.Columns()
+	bindingID, err := dao.AddonLazysheepTggoBinding.Ctx(ctx).
+		Fields(bindingCols.Id).
+		Where(bindingCols.BindingKey, binding.Key).
+		Value()
+	if err != nil {
+		return "", gerror.Wrap(err, "查询频道绑定失败")
+	}
+	if bindingID.IsNil() {
+		return "", gerror.New("当前频道绑定不存在")
+	}
+	noteIds, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
+		Fields(noteCols.Id).
+		Where(noteCols.BindingId, bindingID.Int64()).
+		Array()
+	if err != nil {
+		return "", gerror.Wrap(err, "查询频道笔记失败")
+	}
+	count := len(noteIds)
+	if count > 0 {
+		if _, err = dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).WhereIn(assetCols.NoteId, noteIds).Delete(); err != nil {
+			return "", gerror.Wrap(err, "删除频道笔记资源失败")
+		}
+		if _, err = dao.AddonLazysheepTggoNoteItem.Ctx(ctx).WhereIn(itemCols.NoteId, noteIds).Delete(); err != nil {
+			return "", gerror.Wrap(err, "删除频道笔记项失败")
+		}
+		if _, err = dao.AddonLazysheepTggoNote.Ctx(ctx).WhereIn(noteCols.Id, noteIds).Delete(); err != nil {
+			return "", gerror.Wrap(err, "删除频道笔记失败")
+		}
+	}
+	if err = s.updateBindingPullState(ctx, binding.Key, 0, ""); err != nil {
+		return "", err
+	}
+	if err = clearPullDedupScope(ctx, pullDedupScope(botKey, binding, chatID)); err != nil {
+		g.Log().Warningf(ctx, "清理采集去重缓存失败 bot:%s binding:%s err:%+v", botKey, binding.Key, err)
+	}
+	return fmt.Sprintf("当前频道已清空 %d 条笔记，并重置采集记录。", count), nil
 }
 
 func retryPullAction(ctx context.Context, label string, action func() error) error {
@@ -364,7 +553,7 @@ func retryPullAction(ctx context.Context, label string, action func() error) err
 		if !isRetriablePullError(err) || attempt == 3 {
 			return err
 		}
-		g.Log().Warningf(ctx, "%s 第%d次失败，准备重试 err:%+v", label, attempt, err)
+		g.Log().Warningf(ctx, "%s %s 第%d次失败，准备重试 err:%+v", pullTraceTag(ctx), label, attempt, err)
 		time.Sleep(time.Duration(attempt) * 2 * time.Second)
 	}
 	return err
@@ -391,22 +580,56 @@ func isRetriablePullError(err error) bool {
 }
 
 type pullSummary struct {
-	PairID      string
-	Fetched     int
-	Stored      int
-	Pushed      int
-	QuickPushed int
-	Deduped     int
-	Skipped     int
-	Failed      int
-	PushFailed  int
+	PairID           string
+	RawFetched       int
+	Fetched          int
+	Stored           int
+	Pushed           int
+	PushQueued       int
+	Deduped          int
+	Skipped          int
+	OldCursorSkipped int
+	NonNotes         int
+	Failed           int
+	PushFailed       int
+	Errors           []string
 }
 
 func (s *pullSummary) Message() string {
-	if s.QuickPushed > 0 {
-		return fmt.Sprintf("采集完成：获取 %d 条，快速推送 %d 条，去重 %d 条，跳过 %d 条，失败 %d 条。", s.Fetched, s.QuickPushed, s.Deduped, s.Skipped, s.Failed)
+	message := fmt.Sprintf("采集完成：获取 %d 条，准备开始推送 %d 条。", s.Fetched, s.PushQueued)
+	if s.Deduped > 0 || s.Skipped > 0 || s.Failed > 0 || s.PushFailed > 0 {
+		message += fmt.Sprintf("\n已跳过 %d 条，失败 %d 条。", s.Deduped+s.Skipped, s.Failed+s.PushFailed)
 	}
-	return fmt.Sprintf("采集完成：获取 %d 条，入库 %d 条，推送 %d 条，去重 %d 条，跳过 %d 条，失败 %d 条，推送失败 %d 条。", s.Fetched, s.Stored, s.Pushed, s.Deduped, s.Skipped, s.Failed, s.PushFailed)
+	if errText := s.ErrorText(); errText != "" {
+		message += "\n失败原因：" + errText
+	}
+	return message
+}
+
+func (s *pullSummary) AddError(label string, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	text := strings.TrimSpace(label)
+	if text != "" {
+		text += "："
+	}
+	text += strings.TrimSpace(err.Error())
+	if text == "" {
+		return
+	}
+	const maxErrors = 3
+	if len(s.Errors) >= maxErrors {
+		s.Errors = s.Errors[1:]
+	}
+	s.Errors = append(s.Errors, text)
+}
+
+func (s *pullSummary) ErrorText() string {
+	if s == nil || len(s.Errors) == 0 {
+		return ""
+	}
+	return strings.Join(s.Errors, "；")
 }
 
 func (s *sLazySheepTGGo) SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error) {
@@ -472,10 +695,17 @@ func (s *sLazySheepTGGo) findBinding(ctx context.Context, botKey, sourceURL stri
 			continue
 		}
 		if chatID != 0 && (v.ReviewChatID == chatID || v.PublishChatID == chatID) {
-			if sourceURL != "" && v.SourceURL != sourceURL {
-				return nil, gerror.New("当前频道绑定的链接与命令参数不一致，请检查后重试")
-			}
 			return v, nil
+		}
+	}
+	if strings.TrimSpace(sourceURL) != "" {
+		for _, v := range state.Bindings {
+			if v == nil || v.BotKey != botKey {
+				continue
+			}
+			if v.SourceURL == sourceURL {
+				return v, nil
+			}
 		}
 	}
 	return nil, nil
@@ -497,5 +727,6 @@ func (s *sLazySheepTGGo) updateBindingPullState(ctx context.Context, bindingKey 
 	if err != nil {
 		return gerror.Wrap(err, "更新采集游标失败")
 	}
+	clearAutoPullBindingsCache(ctx)
 	return nil
 }

@@ -239,7 +239,7 @@ func clonePluginConfigs(items map[string]*model.PluginConfig) map[string]*model.
 	out := map[string]*model.PluginConfig{}
 	mergePluginConfigs(out, model.DefaultPluginConfigs())
 	mergePluginConfigs(out, items)
-	return out
+	return model.NormalizePluginConfigs(out)
 }
 
 func mergePluginConfigs(dst, src map[string]*model.PluginConfig) {
@@ -247,8 +247,22 @@ func mergePluginConfigs(dst, src map[string]*model.PluginConfig) {
 		if item == nil {
 			continue
 		}
+		base := dst[key]
 		copied := *item
+		if base != nil {
+			copied.BindingActions = base.BindingActions
+			copied.VisibleInBinding = base.VisibleInBinding
+			if len(item.BindingActions) > 0 {
+				copied.BindingActions = item.BindingActions
+				copied.VisibleInBinding = item.VisibleInBinding
+			}
+		}
 		copied.Settings = map[string]any{}
+		if base != nil {
+			for settingKey, settingValue := range base.Settings {
+				copied.Settings[settingKey] = settingValue
+			}
+		}
 		for settingKey, settingValue := range item.Settings {
 			copied.Settings[settingKey] = settingValue
 		}

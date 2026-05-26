@@ -267,12 +267,15 @@ func (s *sLazySheepTGGo) buildClient(ctx context.Context, cfg *model.BotConfig) 
 	for _, h := range telegram.MessageHandlers() {
 		handler := h
 		client.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+			if matcher, ok := any(handler).(telegram.MessageMatcher); ok {
+				return matcher.Match(update)
+			}
 			return matchTelegramMessage(update.Message, handler.Pattern(), handler.MatchType(), handler.Key()) ||
 				matchTelegramMessage(update.ChannelPost, handler.Pattern(), handler.MatchType(), handler.Key()) ||
 				matchTelegramMessage(update.EditedMessage, handler.Pattern(), handler.MatchType(), handler.Key()) ||
 				matchTelegramMessage(update.EditedChannelPost, handler.Pattern(), handler.MatchType(), handler.Key())
 		}, func(ctx context.Context, b *bot.Bot, update *models.Update) {
-			ctx = telegram.WithBotKey(ctx, cfg.Key)
+			ctx = context.WithoutCancel(telegram.WithBotKey(ctx, cfg.Key))
 			if err := handler.Handle(ctx, b, update); err != nil {
 				g.Log().Warningf(ctx, "telegram message handler failed bot:%s handler:%s err:%+v", cfg.Key, handler.Key(), err)
 			}
@@ -281,13 +284,27 @@ func (s *sLazySheepTGGo) buildClient(ctx context.Context, cfg *model.BotConfig) 
 	for _, h := range telegram.CallbackHandlers() {
 		handler := h
 		client.RegisterHandler(bot.HandlerTypeCallbackQueryData, handler.Pattern(), handler.MatchType(), func(ctx context.Context, b *bot.Bot, update *models.Update) {
-			ctx = telegram.WithBotKey(ctx, cfg.Key)
+			ctx = context.WithoutCancel(telegram.WithBotKey(ctx, cfg.Key))
 			if err := handler.Handle(ctx, b, update); err != nil {
 				g.Log().Warningf(ctx, "telegram callback handler failed bot:%s handler:%s err:%+v", cfg.Key, handler.Key(), err)
+				answerTelegramCallbackError(ctx, b, update, "操作失败，请刷新配置后重试。")
 			}
 		})
 	}
 	return client, nil
+}
+
+func answerTelegramCallbackError(ctx context.Context, b *bot.Bot, update *models.Update, text string) {
+	if b == nil || update == nil || update.CallbackQuery == nil {
+		return
+	}
+	if _, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+		CallbackQueryID: update.CallbackQuery.ID,
+		Text:            text,
+		ShowAlert:       false,
+	}); err != nil {
+		g.Log().Warningf(ctx, "telegram callback error feedback failed err:%+v", err)
+	}
 }
 
 func matchTelegramMessage(msg *models.Message, pattern string, matchType bot.MatchType, key string) bool {
@@ -370,6 +387,12 @@ func (s *sLazySheepTGGo) registerBotCommands(ctx context.Context, client *bot.Bo
 		if _, err := client.DeleteMyCommands(ctx, &bot.DeleteMyCommandsParams{Scope: &models.BotCommandScopeDefault{}}); err != nil {
 			g.Log().Warningf(ctx, "清理 Telegram 默认命令菜单失败 bot:%s err:%+v", cfg.Key, err)
 		}
+		if _, err := client.DeleteMyCommands(ctx, &bot.DeleteMyCommandsParams{Scope: &models.BotCommandScopeAllGroupChats{}}); err != nil {
+			g.Log().Warningf(ctx, "清理 Telegram 群聊命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
+		if _, err := client.DeleteMyCommands(ctx, &bot.DeleteMyCommandsParams{Scope: &models.BotCommandScopeAllChatAdministrators{}}); err != nil {
+			g.Log().Warningf(ctx, "清理 Telegram 管理员命令菜单失败 bot:%s err:%+v", cfg.Key, err)
+		}
 	}
 	if _, err := client.SetChatMenuButton(ctx, &bot.SetChatMenuButtonParams{
 		MenuButton: &models.MenuButtonCommands{Type: models.MenuButtonTypeCommands},
@@ -435,6 +458,12 @@ func (s *sLazySheepTGGo) defaultHandler(botKey string) func(ctx context.Context,
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
 		ctx = telegram.WithBotKey(ctx, botKey)
 		if update == nil || update.Message == nil || update.Message.Text == "" {
+			return
+		}
+		if handled, err := telegram.HandleCreateBotInput(ctx, b, update); err != nil {
+			g.Log().Warningf(ctx, "telegram create bot input failed bot:%s err:%+v", botKey, err)
+			return
+		} else if handled {
 			return
 		}
 		text := strings.TrimSpace(update.Message.Text)
