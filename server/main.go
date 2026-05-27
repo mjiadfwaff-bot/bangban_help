@@ -1,3 +1,5 @@
+//go:build !nopack
+
 // Package main
 // @Link  https://github.com/bufanyun/hotgo
 // @Copyright  Copyright (c) 2023 HotGo CLI

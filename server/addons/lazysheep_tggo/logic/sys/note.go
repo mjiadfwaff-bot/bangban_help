@@ -169,7 +169,45 @@ func (s *sLazySheepTGGo) upsertNoteRow(ctx context.Context, row *noteStoreRow) (
 		cols.WorkflowStatus: 1,
 		cols.Status:         1,
 	}
-	return upsertByKey(ctx, dao.AddonLazysheepTggoNote.Ctx(ctx), cols.ContentId, row.ContentID, data)
+	return upsertNoteByBotContent(ctx, row.BotID, row.ContentID, data)
+}
+
+func upsertNoteByBotContent(ctx context.Context, botID int, contentID int64, row g.Map) (int64, error) {
+	cols := dao.AddonLazysheepTggoNote.Columns()
+	mod := dao.AddonLazysheepTggoNote.Ctx(ctx)
+	existing, err := mod.Clone().
+		Unscoped().
+		Fields(cols.Id).
+		Where(cols.BotId, botID).
+		Where(cols.ContentId, contentID).
+		Value()
+	if err != nil {
+		return 0, gerror.Wrap(err, "查询记录失败")
+	}
+	row[cols.DeletedAt] = nil
+	if !existing.IsNil() {
+		if _, err = mod.Clone().Unscoped().Where(cols.Id, existing.Int64()).Data(row).Update(); err != nil {
+			return 0, gerror.Wrap(err, "更新记录失败")
+		}
+		return existing.Int64(), nil
+	}
+	id, err := mod.Clone().Data(row).InsertAndGetId()
+	if err == nil {
+		return id, nil
+	}
+	existing, lookupErr := mod.Clone().
+		Unscoped().
+		Fields(cols.Id).
+		Where(cols.BotId, botID).
+		Where(cols.ContentId, contentID).
+		Value()
+	if lookupErr == nil && !existing.IsNil() {
+		if _, updateErr := mod.Clone().Unscoped().Where(cols.Id, existing.Int64()).Data(row).Update(); updateErr != nil {
+			return 0, gerror.Wrap(updateErr, "更新记录失败")
+		}
+		return existing.Int64(), nil
+	}
+	return 0, gerror.Wrap(err, "新增记录失败")
 }
 
 func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, botID int, items []noteItem) error {
@@ -351,6 +389,7 @@ func genNoteCode(contentID int64, fallback string) string {
 func (s *sLazySheepTGGo) genBotNoteCode(ctx context.Context, botID int, contentID int64, fallback string) (string, error) {
 	cols := dao.AddonLazysheepTggoNote.Columns()
 	existing, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
+		Unscoped().
 		Fields(cols.Code).
 		Where(cols.BotId, botID).
 		Where(cols.ContentId, contentID).
@@ -365,6 +404,7 @@ func (s *sLazySheepTGGo) genBotNoteCode(ctx context.Context, botID int, contentI
 	code := base
 	for i := 0; i < 20; i++ {
 		val, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
+			Unscoped().
 			Fields(cols.Id).
 			Where(cols.BotId, botID).
 			Where(cols.Code, code).

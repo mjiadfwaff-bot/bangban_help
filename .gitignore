@@ -6,3 +6,4 @@
 pull.bat
 push.sh
 /dist
+.codex-build/

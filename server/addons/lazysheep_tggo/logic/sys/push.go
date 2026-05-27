@@ -81,38 +81,18 @@ func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, clien
 			ParseMode: models.ParseModeHTML,
 		})
 	}
-	chunks := chunkQuickMediaAssets(mediaAssets, quickMediaGroupLimit)
-	var firstMsg *models.Message
-	var firstMsgID int
-	for i, chunk := range chunks {
-		chunkCaption := ""
-		if i == 0 {
-			chunkCaption = caption
-		}
-		var reply *models.ReplyParameters
-		if i > 0 && firstMsgID > 0 {
-			reply = &models.ReplyParameters{
-				MessageID:                firstMsgID,
-				AllowSendingWithoutReply: true,
-			}
-		}
-		msgs, err := sendQuickMediaChunk(ctx, client, chatID, chunk, chunkCaption, reply)
-		if err != nil {
-			return nil, err
-		}
-		if firstMsg == nil && len(msgs) > 0 {
-			firstMsg = msgs[0]
-			firstMsgID = msgs[0].ID
-		}
+	msgs, err := sendQuickMediaAssets(ctx, client, chatID, mediaAssets, caption)
+	if err != nil {
+		return nil, err
 	}
-	if firstMsg == nil {
+	if len(msgs) == 0 {
 		return client.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
 			Text:      caption,
 			ParseMode: models.ParseModeHTML,
 		})
 	}
-	return firstMsg, nil
+	return msgs[0], nil
 }
 
 type pushNote struct {

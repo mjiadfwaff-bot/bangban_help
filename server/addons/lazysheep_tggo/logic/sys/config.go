@@ -648,7 +648,7 @@ func (s *pullSummary) AddError(label string, err error) {
 	if text != "" {
 		text += "："
 	}
-	text += strings.TrimSpace(err.Error())
+	text += trimPullErrorText(err)
 	if text == "" {
 		return
 	}
@@ -664,6 +664,27 @@ func (s *pullSummary) ErrorText() string {
 		return ""
 	}
 	return strings.Join(s.Errors, "；")
+}
+
+func trimPullErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "duplicate entry"):
+		text = "记录已存在，已按重复内容处理"
+	case strings.Contains(lower, "context canceled"):
+		text = "任务已取消"
+	case strings.Contains(lower, "too many requests"):
+		text = "Telegram 限流，已进入重试"
+	}
+	const maxLen = 180
+	if len([]rune(text)) > maxLen {
+		text = string([]rune(text)[:maxLen]) + "..."
+	}
+	return text
 }
 
 func (s *sLazySheepTGGo) SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error) {

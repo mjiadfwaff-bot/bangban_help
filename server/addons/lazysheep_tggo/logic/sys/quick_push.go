@@ -11,7 +11,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -102,32 +101,11 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 		return s.sendQuickText(ctx, rt.client, targetChatID, caption)
 	}
 
-	chunks := chunkQuickMediaAssets(mediaAssets, quickMediaGroupLimit)
-	var firstMsgID int
-	for i, chunk := range chunks {
-		chunkCaption := ""
-		if i == 0 {
-			chunkCaption = caption
-		}
-		var reply *models.ReplyParameters
-		if i > 0 && firstMsgID > 0 {
-			reply = &models.ReplyParameters{
-				MessageID:                firstMsgID,
-				AllowSendingWithoutReply: true,
-			}
-		}
-		chunkStarted := time.Now()
-		g.Log().Debugf(ctx, "%s 快速推送媒体分片发送开始 botKey:%s binding:%s chunk:%d items:%d", pullTraceTag(ctx), botKey, binding.Key, i+1, len(chunk))
-		msgs, err := sendQuickMediaChunk(ctx, rt.client, targetChatID, chunk, chunkCaption, reply)
-		if err != nil {
-			return err
-		}
-		g.Log().Debugf(ctx, "%s 快速推送媒体分片完成 botKey:%s binding:%s chunk:%d messages:%d elapsed:%s", pullTraceTag(ctx), botKey, binding.Key, i+1, len(msgs), time.Since(chunkStarted).Round(time.Millisecond))
-		if firstMsgID == 0 && len(msgs) > 0 {
-			firstMsgID = msgs[0].ID
-		}
+	msgs, err := sendQuickMediaAssets(ctx, rt.client, targetChatID, mediaAssets, caption)
+	if err != nil {
+		return err
 	}
-	g.Log().Debugf(ctx, "%s 快速推送完成 botKey:%s binding:%s targetChat:%d total:%s", pullTraceTag(ctx), botKey, binding.Key, targetChatID, time.Since(started).Round(time.Millisecond))
+	g.Log().Debugf(ctx, "%s 快速推送完成 botKey:%s binding:%s targetChat:%d messages:%d total:%s", pullTraceTag(ctx), botKey, binding.Key, targetChatID, len(msgs), time.Since(started).Round(time.Millisecond))
 	return nil
 }
 
@@ -185,7 +163,19 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, quickMediaDownloadConcurrency)
+	seenURLs := make(map[string]struct{}, len(items))
 	for index, item := range items {
+		if item.Type != noteTypeImage && item.Type != noteTypeVideo {
+			continue
+		}
+		mediaURL := normalizeDedupMediaURL(item.Content)
+		if mediaURL == "" {
+			continue
+		}
+		if _, ok := seenURLs[mediaURL]; ok {
+			continue
+		}
+		seenURLs[mediaURL] = struct{}{}
 		switch item.Type {
 		case noteTypeImage:
 			expected++
@@ -323,42 +313,139 @@ func buildQuickLocationBlock(items []quickLocationItem) string {
 }
 
 func sendQuickMediaChunk(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string, reply *models.ReplyParameters) ([]*models.Message, error) {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		media := quickMediaAssetsToInput(assets)
-		applyCaptionToFirstMedia(media, caption)
-		params := &bot.SendMediaGroupParams{
-			ChatID:          chatID,
-			Media:           media,
-			ReplyParameters: reply,
-		}
-		started := time.Now()
-		msgs, err := client.SendMediaGroup(ctx, params)
-		if err == nil {
-			g.Log().Debugf(ctx, "%s TG 媒体组发送成功 items:%d elapsed:%s", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond))
-			rememberQuickTelegramMedia(ctx, assets, msgs)
-			return msgs, nil
-		}
-		lastErr = err
-		g.Log().Warningf(ctx, "%s TG 媒体组发送失败 items:%d elapsed:%s err:%+v", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond), err)
-		var rateErr *bot.TooManyRequestsError
-		if !errors.As(err, &rateErr) && !isRetriablePullError(err) {
+	if len(assets) == 1 {
+		msg, err := sendQuickPhotoAsset(ctx, client, chatID, assets[0], caption, reply)
+		if err != nil {
 			return nil, err
 		}
-		waitSeconds := attempt + 2
-		if rateErr != nil {
-			waitSeconds = rateErr.RetryAfter + 1
-			if waitSeconds <= 0 {
-				waitSeconds = 2
+		return []*models.Message{msg}, nil
+	}
+	media := quickMediaAssetsToInput(assets)
+	applyCaptionToFirstMedia(media, caption)
+	params := &bot.SendMediaGroupParams{
+		ChatID:          chatID,
+		Media:           media,
+		ReplyParameters: reply,
+	}
+	started := time.Now()
+	msgs, err := client.SendMediaGroup(ctx, params)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s TG 媒体组发送失败 items:%d elapsed:%s err:%+v", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	g.Log().Debugf(ctx, "%s TG 媒体组发送成功 items:%d elapsed:%s", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond))
+	rememberQuickTelegramMedia(ctx, assets, msgs)
+	return msgs, nil
+}
+
+func sendQuickMediaAssets(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string) ([]*models.Message, error) {
+	messages := make([]*models.Message, 0, len(assets))
+	captionUsed := false
+	for _, part := range splitQuickMediaAssets(assets) {
+		partCaption := ""
+		if !captionUsed {
+			partCaption = caption
+			captionUsed = strings.TrimSpace(caption) != ""
+		}
+		var reply *models.ReplyParameters
+		if len(messages) > 0 {
+			reply = &models.ReplyParameters{
+				MessageID:                messages[0].ID,
+				AllowSendingWithoutReply: true,
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Duration(waitSeconds) * time.Second):
+		if len(part) == 1 && part[0].Type == noteTypeVideo {
+			msg, err := sendQuickVideoAsset(ctx, client, chatID, part[0], partCaption, reply)
+			if err != nil {
+				return messages, err
+			}
+			messages = append(messages, msg)
+			continue
+		}
+		msgs, err := sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
+		if err != nil {
+			return messages, err
+		}
+		messages = append(messages, msgs...)
+	}
+	return messages, nil
+}
+
+func splitQuickMediaAssets(assets []quickMediaAsset) [][]quickMediaAsset {
+	parts := make([][]quickMediaAsset, 0, len(assets))
+	photos := make([]quickMediaAsset, 0, quickMediaGroupLimit)
+	flushPhotos := func() {
+		if len(photos) == 0 {
+			return
+		}
+		parts = append(parts, chunkQuickMediaAssets(photos, quickMediaGroupLimit)...)
+		photos = make([]quickMediaAsset, 0, quickMediaGroupLimit)
+	}
+	for _, asset := range assets {
+		if len(photos) > 0 && asset.Type != photos[0].Type {
+			flushPhotos()
+		}
+		photos = append(photos, asset)
+		if len(photos) >= quickMediaGroupLimit {
+			flushPhotos()
 		}
 	}
-	return nil, lastErr
+	flushPhotos()
+	return parts
+}
+
+func sendQuickPhotoAsset(ctx context.Context, client *bot.Bot, chatID int64, asset quickMediaAsset, caption string, reply *models.ReplyParameters) (*models.Message, error) {
+	params := &bot.SendPhotoParams{
+		ChatID:          chatID,
+		Photo:           quickInputFile(asset),
+		Caption:         caption,
+		ParseMode:       models.ParseModeHTML,
+		ReplyParameters: reply,
+	}
+	started := time.Now()
+	msg, err := client.SendPhoto(ctx, params)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s TG 图片发送失败 elapsed:%s err:%+v", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	g.Log().Debugf(ctx, "%s TG 图片发送成功 elapsed:%s", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond))
+	if fileID := telegramFileIDFromMessage(msg, noteTypeImage); fileID != "" {
+		updateTelegramFileID(ctx, asset.SourceURL, fileID)
+	}
+	return msg, nil
+}
+
+func sendQuickVideoAsset(ctx context.Context, client *bot.Bot, chatID int64, asset quickMediaAsset, caption string, reply *models.ReplyParameters) (*models.Message, error) {
+	width, height := videoDimensions(asset.AspectRatio)
+	params := &bot.SendVideoParams{
+		ChatID:            chatID,
+		Video:             quickInputFile(asset),
+		Duration:          asset.Duration,
+		Width:             width,
+		Height:            height,
+		Caption:           caption,
+		ParseMode:         models.ParseModeHTML,
+		SupportsStreaming: true,
+		ReplyParameters:   reply,
+	}
+	started := time.Now()
+	msg, err := client.SendVideo(ctx, params)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s TG 视频发送失败 elapsed:%s err:%+v", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	g.Log().Debugf(ctx, "%s TG 视频发送成功 elapsed:%s", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond))
+	if fileID := telegramFileIDFromMessage(msg, noteTypeVideo); fileID != "" {
+		updateTelegramFileID(ctx, asset.SourceURL, fileID)
+	}
+	return msg, nil
+}
+
+func quickInputFile(asset quickMediaAsset) models.InputFile {
+	if strings.TrimSpace(asset.TgFileID) != "" {
+		return &models.InputFileString{Data: asset.TgFileID}
+	}
+	return &models.InputFileUpload{Filename: asset.Filename, Data: bytes.NewReader(asset.Data)}
 }
 
 func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {

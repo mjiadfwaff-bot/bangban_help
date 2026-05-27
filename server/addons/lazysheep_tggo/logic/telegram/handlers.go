@@ -387,6 +387,7 @@ func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 
 func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *models.Message, progressErr error, text string) {
 	sentResult := false
+	text = truncateTelegramText(text)
 	if strings.TrimSpace(text) != "" {
 		if sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: chatID,
@@ -394,9 +395,11 @@ func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *
 		}); err == nil {
 			sentResult = true
 			deleteMessageLater(b, chatID, sent.ID)
+		} else {
+			g.Log().Warningf(ctx, "发送采集结果失败 chat:%d err:%+v", chatID, err)
 		}
 	}
-	if progressErr == nil && progress != nil {
+	if sentResult && progressErr == nil && progress != nil {
 		if _, err := b.DeleteMessage(ctx, &bot.DeleteMessageParams{
 			ChatID:    chatID,
 			MessageID: progress.ID,
@@ -413,6 +416,16 @@ func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *
 			deleteMessageLater(b, chatID, progress.ID)
 		}
 	}
+}
+
+func truncateTelegramText(text string) string {
+	text = strings.TrimSpace(text)
+	const maxRunes = 3800
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "\n\n内容过长，已截断。完整错误请在后台日志查看。"
 }
 
 func pullProgressText(modeText string, limit int) string {

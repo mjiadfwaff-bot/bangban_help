@@ -52,16 +52,18 @@ func recordPullMonitorEvent(ctx context.Context, event *sysin.PullMonitorEvent) 
 	if event == nil {
 		return
 	}
+	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	event.VisibleAtUnix = time.Now().Add(pullMonitorDelay).Unix()
 	mutex := lock.NewConfig(10*time.Second, 100*time.Millisecond).Mutex(pullMonitorLockKey)
-	if err := mutex.Lock(ctx); err != nil {
+	if err := mutex.Lock(writeCtx); err != nil {
 		g.Log().Warningf(ctx, "记录拉取监控加锁失败 trace:%s err:%+v", event.TraceID, err)
 		return
 	}
-	defer unlockPullMonitor(ctx, mutex)
-	pending := loadPullMonitorPending(ctx)
+	defer unlockPullMonitor(writeCtx, mutex)
+	pending := loadPullMonitorPending(writeCtx)
 	pending = append(pending, event)
-	if err := cache.Instance().Set(ctx, pullMonitorPendingKey, pending, pullMonitorCacheTTL); err != nil {
+	if err := cache.Instance().Set(writeCtx, pullMonitorPendingKey, pending, pullMonitorCacheTTL); err != nil {
 		g.Log().Warningf(ctx, "写入拉取监控缓存失败 trace:%s err:%+v", event.TraceID, err)
 	}
 }
