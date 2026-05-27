@@ -329,7 +329,9 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	}
 pullLocked:
 	defer func() {
-		if unlockErr := mutex.Unlock(ctx); unlockErr != nil && !gerror.Is(unlockErr, lock.ErrNotExist) {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if unlockErr := mutex.Unlock(unlockCtx); unlockErr != nil && !gerror.Is(unlockErr, lock.ErrNotExist) {
 			g.Log().Warningf(ctx, "释放采集执行锁失败 key:%s err:%+v", pullKey, unlockErr)
 		}
 	}()
@@ -347,6 +349,8 @@ pullLocked:
 	dedupScope := pullDedupScope(in.BotKey, binding, in.ChatID)
 	successMaxContentID := binding.LastPullID
 	successLatestCursor := binding.LastCursor
+	successLatestCursorID := parseInt(binding.LastCursor)
+	bindingLastCursorID := successLatestCursorID
 	batchSeen := make(map[string]struct{})
 	processed := 0
 	noteProcessed := 0
@@ -395,10 +399,11 @@ pullLocked:
 			}
 			g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s page:%d index:%d contentID:%s autoPush:%t", in.BotKey, binding.Key, page.Page, idx+1, msg.ContentId, binding.AutoPush)
 			contentID := parseInt(msg.ContentId)
-			if !in.Retry && binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID {
+			cursorID := parseInt(msg.Id)
+			if !in.Retry && isOldBangchatMessage(binding, cursorID, contentID) {
 				summary.Skipped++
 				summary.OldCursorSkipped++
-				timer.Report("跳过旧笔记 contentID:%s lastPullID:%d。", msg.ContentId, binding.LastPullID)
+				timer.Report("跳过旧笔记 contentID:%s cursor:%s。", msg.ContentId, msg.Id)
 				return errPullOldCursorReached
 			}
 			var note noteContent
@@ -458,9 +463,15 @@ pullLocked:
 				continue
 			}
 			summary.PushQueued++
+			if cursorID > 0 && cursorID > successLatestCursorID {
+				successLatestCursorID = cursorID
+				successLatestCursor = msg.Id
+			}
 			if contentID > successMaxContentID {
 				successMaxContentID = contentID
-				successLatestCursor = msg.Id
+				if successLatestCursor == "" {
+					successLatestCursor = msg.Id
+				}
 			}
 			timer.Report("入库并加入推送队列完成 contentID:%s。", msg.ContentId)
 			if fingerprint != "" && stored != nil {
@@ -482,7 +493,7 @@ pullLocked:
 		summary.PairID = pairID
 	}
 	g.Log().Debugf(ctx, "%s BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d summary:%s", pullTraceTag(ctx), in.BotKey, binding.Key, summary.PairID, summary.Fetched, summary.Message())
-	if successMaxContentID > binding.LastPullID {
+	if successMaxContentID > binding.LastPullID || successLatestCursorID > bindingLastCursorID {
 		if err := s.updateBindingPullState(ctx, binding.Key, successMaxContentID, successLatestCursor); err != nil {
 			g.Log().Warningf(ctx, "%s 更新采集游标失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, err)
 		}
@@ -681,6 +692,20 @@ func isBangchatNote(raw json.RawMessage) bool {
 	}
 	_ = json.Unmarshal(raw, &msg)
 	return msg.Type == "MESSAGE_TYPE_NOTES"
+}
+
+func isOldBangchatMessage(binding *model.BindingRecord, cursorID int64, contentID int64) bool {
+	if binding == nil {
+		return false
+	}
+	lastCursorID := parseInt(binding.LastCursor)
+	if lastCursorID > 0 && cursorID > 0 {
+		return cursorID <= lastCursorID
+	}
+	if lastCursorID > 0 {
+		return false
+	}
+	return binding.LastPullID > 0 && contentID > 0 && contentID <= binding.LastPullID
 }
 
 func (s *sLazySheepTGGo) configureBangchatProxy(ctx context.Context) error {

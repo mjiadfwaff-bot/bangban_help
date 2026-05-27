@@ -100,6 +100,14 @@ func (l *Lock) TryLock(ctx context.Context) error {
 
 // Unlock 解锁
 func (l *Lock) Unlock(ctx context.Context) error {
+	defer func() {
+		// Stop local renewal even if Redis unlock fails because the caller no
+		// longer owns this lock lifecycle.
+		defer func() {
+			_ = recover()
+		}()
+		close(l.watchDog)
+	}()
 	var args []interface{}
 	args = append(args, l.randomValue)
 	eval, err := g.Redis().GroupScript().Eval(ctx, unlockScript, 1, []string{l.resource}, args)
@@ -112,7 +120,6 @@ func (l *Lock) Unlock(ctx context.Context) error {
 		return ErrNotExist
 	}
 
-	close(l.watchDog)
 	return err
 }
 
