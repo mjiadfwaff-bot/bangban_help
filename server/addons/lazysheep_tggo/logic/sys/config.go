@@ -304,10 +304,30 @@ func (s *sLazySheepTGGo) PullNow(ctx context.Context, in *lsysin.PullInp) (messa
 	mutex := lock.Mutex(pullKey)
 	if lockErr := mutex.TryLock(ctx); lockErr != nil {
 		if gerror.Is(lockErr, lock.ErrLockFailed) {
+			if !in.Auto && cancelRunningPull(in.BotKey, binding) {
+				g.Log().Warningf(ctx, "%s 手动拉取优先，已取消正在执行的采集任务 botKey:%s binding:%s", pullTraceTag(ctx), in.BotKey, binding.Key)
+				for i := 0; i < 15; i++ {
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+					}
+					mutex = lock.Mutex(pullKey)
+					lockErr = mutex.TryLock(ctx)
+					if lockErr == nil {
+						goto pullLocked
+					}
+					if !gerror.Is(lockErr, lock.ErrLockFailed) {
+						return "", gerror.Wrap(lockErr, "创建采集执行锁失败")
+					}
+				}
+			}
+			g.Log().Debugf(ctx, "%s 采集执行锁已存在 botKey:%s binding:%s auto:%t", pullTraceTag(ctx), in.BotKey, binding.Key, in.Auto)
 			return "已有采集任务正在执行，请稍后再试。", nil
 		}
 		return "", gerror.Wrap(lockErr, "创建采集执行锁失败")
 	}
+pullLocked:
 	defer func() {
 		if unlockErr := mutex.Unlock(ctx); unlockErr != nil && !gerror.Is(unlockErr, lock.ErrNotExist) {
 			g.Log().Warningf(ctx, "释放采集执行锁失败 key:%s err:%+v", pullKey, unlockErr)

@@ -21,6 +21,10 @@ func (s *sLazySheepTGGo) saveWebhookLog(ctx context.Context, botKey string, payl
 	if update != nil && update.ID != 0 && updateType == "" {
 		updateType = "unknown"
 	}
+	if err := s.ensureWebhookLogTable(ctx); err != nil {
+		g.Log().Warningf(ctx, "初始化 webhook 原始日志表失败 botKey:%s err:%+v", botKey, err)
+		return
+	}
 	_, err := g.DB().Exec(ctx, `
 		INSERT INTO hg_addon_lazysheep_tggo_webhook_log
 		(bot_key, update_id, update_type, chat_id, user_id, username, message_id, summary, payload, created_at, updated_at)
