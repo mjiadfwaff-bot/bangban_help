@@ -498,11 +498,21 @@ func refreshBindingConfigPanel(ctx context.Context, b *bot.Bot, update *models.U
 			Text:        buildBindingConfigTextWithState(state, binding),
 			ReplyMarkup: keyboard,
 		}); err != nil {
+			if isTelegramMessageNotModified(err) {
+				return replyCallback(ctx, b, update, alert)
+			}
 			g.Log().Warningf(ctx, "刷新绑定配置面板失败 bot:%s chat:%d err:%+v", currentBotKey(ctx), chatID, err)
 			return replyCallback(ctx, b, update, alert+" 配置已保存，但面板刷新失败，请点“刷新配置”。")
 		}
 	}
 	return replyCallback(ctx, b, update, alert)
+}
+
+func isTelegramMessageNotModified(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "message is not modified")
 }
 
 func callbackChatID(callback *models.CallbackQuery) int64 {

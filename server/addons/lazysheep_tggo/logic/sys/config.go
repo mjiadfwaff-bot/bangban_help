@@ -58,6 +58,9 @@ func (s *sLazySheepTGGo) UnInstall(ctx context.Context) error {
 }
 
 func (s *sLazySheepTGGo) BootBots(ctx context.Context) error {
+	if err := s.ensureTables(ctx); err != nil {
+		return err
+	}
 	return s.bootBots(ctx)
 }
 
