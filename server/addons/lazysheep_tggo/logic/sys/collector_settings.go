@@ -25,12 +25,7 @@ func collectorMergeVerifyGroupEnabled(plugins map[string]*model.PluginConfig, bi
 			return v
 		}
 	}
-	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
-		if v, ok := cfg.Settings["mergeVerifyInGroup"].(bool); ok {
-			return v
-		}
-	}
-	return false
+	return true
 }
 
 func withBindingCollectorSettings(settings map[string]any, plugins map[string]*model.PluginConfig, bindingState map[string]any) map[string]any {

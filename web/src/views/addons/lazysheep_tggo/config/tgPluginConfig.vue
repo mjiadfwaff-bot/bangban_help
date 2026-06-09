@@ -428,7 +428,7 @@
         commands: normalizeCommands(formValue.value.settings?.commands, formValue.value.settings?.command),
         showVerifyLink: formValue.value.settings?.showVerifyLink !== false,
         showLocationLink: formValue.value.settings?.showLocationLink !== false,
-        mergeVerifyInGroup: formValue.value.settings?.mergeVerifyInGroup === true,
+        mergeVerifyInGroup: formValue.value.settings?.mergeVerifyInGroup !== false,
         revealInBot: formValue.value.settings?.revealInBot === true,
         footer: formValue.value.settings?.footer || '',
         captionTemplate: formValue.value.settings?.captionTemplate || '',

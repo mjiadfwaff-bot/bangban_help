@@ -3,6 +3,8 @@ package sys
 import (
 	"fmt"
 	"testing"
+
+	"hotgo/addons/lazysheep_tggo/model"
 )
 
 func TestNoteFingerprintUsesMediaURLsOnly(t *testing.T) {
@@ -118,6 +120,26 @@ func TestSelectQuickMediaItemsForPushCanBeDisabled(t *testing.T) {
 	}
 	if len(selected) != len(items) {
 		t.Fatalf("expected original items, got %d", len(selected))
+	}
+}
+
+func TestCollectorMergeVerifyGroupEnabledDefaultsToEnabled(t *testing.T) {
+	if !collectorMergeVerifyGroupEnabled(nil, nil) {
+		t.Fatal("expected merge verify group to be enabled by default")
+	}
+	if !collectorMergeVerifyGroupEnabled(nil, map[string]any{}) {
+		t.Fatal("expected old binding without merge setting to be enabled")
+	}
+	if collectorMergeVerifyGroupEnabled(nil, map[string]any{collectorMergeVerifyGroupStateKey: false}) {
+		t.Fatal("expected explicit binding false to disable merge")
+	}
+	plugins := map[string]*model.PluginConfig{
+		"collector": {
+			Settings: map[string]any{"mergeVerifyInGroup": false},
+		},
+	}
+	if !collectorMergeVerifyGroupEnabled(plugins, map[string]any{}) {
+		t.Fatal("expected old global false to keep default merge enabled")
 	}
 }
 

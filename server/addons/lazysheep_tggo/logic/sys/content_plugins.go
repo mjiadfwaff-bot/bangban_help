@@ -26,7 +26,7 @@ func (s *sLazySheepTGGo) defaultBindingPluginState(ctx context.Context, botKey s
 	}
 	if cfg := plugins["collector"]; cfg != nil && cfg.Enabled {
 		state["collector.revealInBot"] = false
-		state[collectorMergeVerifyGroupStateKey] = false
+		state[collectorMergeVerifyGroupStateKey] = true
 		state[collectorAutoPullStateKey] = true
 	}
 	return state

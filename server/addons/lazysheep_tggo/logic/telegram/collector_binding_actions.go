@@ -51,11 +51,6 @@ func collectorMergeVerifyGroupEnabled(plugins map[string]*model.PluginConfig, bi
 			return v
 		}
 	}
-	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
-		if v, ok := cfg.Settings["mergeVerifyInGroup"].(bool); ok {
-			return v
-		}
-	}
 	return true
 }
 
