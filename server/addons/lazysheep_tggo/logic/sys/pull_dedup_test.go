@@ -1,6 +1,9 @@
 package sys
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestNoteFingerprintUsesMediaURLsOnly(t *testing.T) {
 	first, _ := noteFingerprint(noteContent{Items: []noteItem{
@@ -41,5 +44,121 @@ func TestNoteFingerprintWithoutMediaIsEmpty(t *testing.T) {
 	}})
 	if fingerprint != "" {
 		t.Fatalf("expected empty fingerprint for note without media, got %s", fingerprint)
+	}
+}
+
+func TestSelectQuickMediaItemsForPushMergesVerifyVideo(t *testing.T) {
+	items := []noteItem{
+		{Type: noteTypeImage, Content: "https://img.example/1.jpg"},
+		{Type: noteTypeImage, Content: "https://img.example/2.jpg"},
+		{Type: noteTypeVideo, Content: "https://img.example/verify.mp4", VerifyVideo: true},
+	}
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": true})
+	if !merged {
+		t.Fatal("expected verify video to be merged into media group")
+	}
+	if len(selected) != len(items) {
+		t.Fatalf("expected all media to be kept, got %d", len(selected))
+	}
+	if selected[2].Content != "https://img.example/verify.mp4" {
+		t.Fatalf("expected verify video to stay in group, got %s", selected[2].Content)
+	}
+}
+
+func TestSelectQuickMediaItemsForPushMergesUnmarkedVideo(t *testing.T) {
+	items := []noteItem{
+		{Type: noteTypeImage, Content: "https://img.example/1.jpg"},
+		{Type: noteTypeImage, Content: "https://img.example/2.jpg"},
+		{Type: noteTypeVideo, Content: "https://img.example/video.mp4"},
+	}
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": true})
+	if !merged {
+		t.Fatal("expected first video to be merged into media group")
+	}
+	if len(selected) != len(items) {
+		t.Fatalf("expected all media to be kept, got %d", len(selected))
+	}
+	if selected[2].Type != noteTypeVideo || !selected[2].VerifyVideo {
+		t.Fatalf("expected unmarked video to be treated as verify video, got %#v", selected[2])
+	}
+}
+
+func TestSelectQuickMediaItemsForPushKeepsNineImagesAndOneVerifyVideo(t *testing.T) {
+	items := make([]noteItem, 0, 13)
+	for i := 0; i < 12; i++ {
+		items = append(items, noteItem{Type: noteTypeImage, Content: fmt.Sprintf("https://img.example/%02d.jpg", i)})
+	}
+	items = append(items, noteItem{Type: noteTypeVideo, Content: "https://img.example/verify.mp4", VerifyVideo: true})
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": true})
+	if !merged {
+		t.Fatal("expected verify video to be merged into media group")
+	}
+	if len(selected) != quickMediaGroupLimit {
+		t.Fatalf("expected %d media items, got %d", quickMediaGroupLimit, len(selected))
+	}
+	for i := 0; i < quickMediaGroupLimit-1; i++ {
+		if selected[i].Type != noteTypeImage || selected[i].VerifyVideo {
+			t.Fatalf("expected first 9 items to be normal images, got %#v", selected[i])
+		}
+	}
+	last := selected[quickMediaGroupLimit-1]
+	if last.Type != noteTypeVideo || !last.VerifyVideo {
+		t.Fatalf("expected last item to be verify video, got %#v", last)
+	}
+}
+
+func TestSelectQuickMediaItemsForPushCanBeDisabled(t *testing.T) {
+	items := []noteItem{
+		{Type: noteTypeImage, Content: "https://img.example/1.jpg"},
+		{Type: noteTypeVideo, Content: "https://img.example/verify.mp4", VerifyVideo: true},
+	}
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": false})
+	if merged {
+		t.Fatal("expected merge mode to be disabled")
+	}
+	if len(selected) != len(items) {
+		t.Fatalf("expected original items, got %d", len(selected))
+	}
+}
+
+func TestSplitQuickMediaAssetsWithMergeModeUsesCountOnly(t *testing.T) {
+	assets := make([]quickMediaAsset, 0, quickMediaGroupLimit)
+	for i := 0; i < quickMediaGroupLimit-1; i++ {
+		assets = append(assets, quickMediaAsset{
+			Type:      noteTypeImage,
+			SourceURL: fmt.Sprintf("https://img.example/%02d.jpg", i),
+			Data:      make([]byte, 8),
+		})
+	}
+	assets = append(assets, quickMediaAsset{
+		Type:        noteTypeVideo,
+		SourceURL:   "https://img.example/verify.mp4",
+		Data:        make([]byte, 8),
+		VerifyVideo: true,
+	})
+	parts := splitQuickMediaAssetsWithMode(assets, true)
+	if len(parts) != 1 {
+		t.Fatalf("expected merged media to stay in one group, got %d", len(parts))
+	}
+	if len(parts[0]) != quickMediaGroupLimit {
+		t.Fatalf("expected %d items in merged group, got %d", quickMediaGroupLimit, len(parts[0]))
+	}
+}
+
+func TestSplitQuickMediaAssetsUsesCountOnly(t *testing.T) {
+	assets := make([]quickMediaAsset, 0, quickMediaGroupLimit+1)
+	for i := 0; i < quickMediaGroupLimit+1; i++ {
+		assets = append(assets, quickMediaAsset{
+			Type:      noteTypeImage,
+			SourceURL: fmt.Sprintf("https://img.example/%02d.jpg", i),
+			Data:      make([]byte, 8),
+		})
+	}
+	parts := splitQuickMediaAssets(assets)
+	if len(parts) != 2 {
+		t.Fatalf("expected media to split by count only, got %d groups", len(parts))
+	}
+	if len(parts[0]) != quickMediaGroupLimit || len(parts[1]) != 1 {
+		t.Fatalf("unexpected group sizes: %d and %d", len(parts[0]), len(parts[1]))
 	}
 }

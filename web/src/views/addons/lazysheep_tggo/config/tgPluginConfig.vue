@@ -69,6 +69,9 @@
       <n-form-item label="机器人查看">
         <n-switch v-model:value="collectorValue.revealInBot" />
       </n-form-item>
+      <n-form-item label="验证视频合并">
+        <n-switch v-model:value="collectorValue.mergeVerifyInGroup" />
+      </n-form-item>
       <n-form-item label="页脚">
         <n-input
           v-model:value="collectorValue.footer"
@@ -425,7 +428,8 @@
         commands: normalizeCommands(formValue.value.settings?.commands, formValue.value.settings?.command),
         showVerifyLink: formValue.value.settings?.showVerifyLink !== false,
         showLocationLink: formValue.value.settings?.showLocationLink !== false,
-        revealInBot: formValue.value.settings?.revealInBot !== false,
+        mergeVerifyInGroup: formValue.value.settings?.mergeVerifyInGroup === true,
+        revealInBot: formValue.value.settings?.revealInBot === true,
         footer: formValue.value.settings?.footer || '',
         captionTemplate: formValue.value.settings?.captionTemplate || '',
         bindHelpText: formValue.value.settings?.bindHelpText || '',
@@ -517,7 +521,8 @@
         commands: normalizeCommands(collectorValue.value.commands, collectorValue.value.command),
         showVerifyLink: collectorValue.value.showVerifyLink !== false,
         showLocationLink: collectorValue.value.showLocationLink !== false,
-        revealInBot: collectorValue.value.revealInBot !== false,
+        mergeVerifyInGroup: collectorValue.value.mergeVerifyInGroup === true,
+        revealInBot: collectorValue.value.revealInBot === true,
         footer: collectorValue.value.footer || '',
         captionTemplate: collectorValue.value.captionTemplate || '',
         bindHelpText: collectorValue.value.bindHelpText || '',

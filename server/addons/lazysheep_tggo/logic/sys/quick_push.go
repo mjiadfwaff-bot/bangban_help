@@ -33,9 +33,8 @@ import (
 
 const (
 	quickMediaGroupLimit          = 10
-	quickMediaGroupMaxBytes       = 32 << 20
 	quickMediaMaxBytes            = 48 << 20
-	quickMediaDownloadConcurrency = 5
+	quickMediaDownloadConcurrency = 8
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
 )
 
@@ -90,9 +89,11 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
 		settings = cfg.Settings
 	}
+	settings = withBindingCollectorSettings(settings, plugins, binding.PluginState)
 	locations := collectQuickLocations(note.Items)
 	caption := buildQuickCaption(title, text, settings, locations, plugins, binding.PluginState)
-	mediaAssets, err := buildQuickMediaAssets(ctx, note.Items)
+	items, merged := selectQuickMediaItemsForPush(note.Items, settings)
+	mediaAssets, err := buildQuickMediaAssets(ctx, items)
 	if err != nil {
 		return err
 	}
@@ -101,7 +102,7 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 		return s.sendQuickText(ctx, rt.client, targetChatID, caption)
 	}
 
-	msgs, err := sendQuickMediaAssets(ctx, rt.client, targetChatID, mediaAssets, caption)
+	msgs, err := sendQuickMediaAssetsWithMode(ctx, rt.client, targetChatID, mediaAssets, caption, merged)
 	if err != nil {
 		return err
 	}
@@ -148,6 +149,46 @@ type quickMediaAsset struct {
 	Duration     int
 	AspectRatio  float64
 	TgFileID     string
+	VerifyVideo  bool
+}
+
+func selectQuickMediaItemsForPush(items []noteItem, settings map[string]any) ([]noteItem, bool) {
+	if !pushSettingBool(settings, "mergeVerifyInGroup", false) {
+		return items, false
+	}
+	media := make([]noteItem, 0, len(items))
+	images := make([]noteItem, 0, quickMediaGroupLimit-1)
+	var firstVideo *noteItem
+	for _, item := range items {
+		if item.Type != noteTypeImage && item.Type != noteTypeVideo {
+			continue
+		}
+		media = append(media, item)
+		if item.Type == noteTypeImage && !item.VerifyVideo && len(images) < quickMediaGroupLimit-1 {
+			images = append(images, item)
+		}
+		if item.Type == noteTypeVideo && firstVideo == nil {
+			copyItem := item
+			copyItem.VerifyVideo = true
+			firstVideo = &copyItem
+		}
+	}
+	if len(media) == 0 || firstVideo == nil {
+		return items, false
+	}
+	if len(media) <= quickMediaGroupLimit {
+		for i := range media {
+			if media[i].Type == noteTypeVideo && media[i].Content == firstVideo.Content {
+				media[i].VerifyVideo = true
+				break
+			}
+		}
+		return media, true
+	}
+	selected := make([]noteItem, 0, quickMediaGroupLimit)
+	selected = append(selected, images...)
+	selected = append(selected, *firstVideo)
+	return selected, true
 }
 
 func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaAsset, error) {
@@ -200,10 +241,11 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 				g.Log().Debugf(ctx, "%s 下载快速推送图片完成 index:%d bytes:%d", pullTraceTag(ctx), idx, len(data))
 				mediaType := resolveQuickMediaType(item.Type, filename, data, contentType)
 				results[idx] = &quickMediaAsset{
-					Type:      mediaType,
-					Filename:  filename,
-					Data:      data,
-					SourceURL: strings.TrimSpace(item.Content),
+					Type:        mediaType,
+					Filename:    filename,
+					Data:        data,
+					SourceURL:   strings.TrimSpace(item.Content),
+					VerifyVideo: item.VerifyVideo,
 				}
 			}(index, item)
 		case noteTypeVideo:
@@ -237,6 +279,7 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 					ThumbnailURL: thumbURL,
 					Duration:     item.Duration,
 					AspectRatio:  item.AspectRatio,
+					VerifyVideo:  item.VerifyVideo,
 				}
 			}(index, item)
 		}
@@ -339,9 +382,13 @@ func sendQuickMediaChunk(ctx context.Context, client *bot.Bot, chatID int64, ass
 }
 
 func sendQuickMediaAssets(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string) ([]*models.Message, error) {
+	return sendQuickMediaAssetsWithMode(ctx, client, chatID, assets, caption, false)
+}
+
+func sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string, mergeGroup bool) ([]*models.Message, error) {
 	messages := make([]*models.Message, 0, len(assets))
 	captionUsed := false
-	for _, part := range splitQuickMediaAssets(assets) {
+	for _, part := range splitQuickMediaAssetsWithMode(assets, mergeGroup) {
 		partCaption := ""
 		if !captionUsed {
 			partCaption = caption
@@ -357,6 +404,10 @@ func sendQuickMediaAssets(ctx context.Context, client *bot.Bot, chatID int64, as
 		if len(part) == 1 && part[0].Type == noteTypeVideo {
 			msg, err := sendQuickVideoAsset(ctx, client, chatID, part[0], partCaption, reply)
 			if err != nil {
+				if len(messages) > 0 {
+					g.Log().Warningf(ctx, "%s TG 媒体部分发送成功，跳过剩余媒体避免整条重复 chat:%d sent:%d err:%+v", pullTraceTag(ctx), chatID, len(messages), err)
+					return messages, nil
+				}
 				return messages, err
 			}
 			messages = append(messages, msg)
@@ -364,11 +415,22 @@ func sendQuickMediaAssets(ctx context.Context, client *bot.Bot, chatID int64, as
 		}
 		msgs, err := sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
 		if err != nil {
+			if len(messages) > 0 {
+				g.Log().Warningf(ctx, "%s TG 媒体部分发送成功，跳过剩余媒体避免整条重复 chat:%d sent:%d err:%+v", pullTraceTag(ctx), chatID, len(messages), err)
+				return messages, nil
+			}
 			return messages, err
 		}
 		messages = append(messages, msgs...)
 	}
 	return messages, nil
+}
+
+func splitQuickMediaAssetsWithMode(assets []quickMediaAsset, mergeGroup bool) [][]quickMediaAsset {
+	if mergeGroup {
+		return chunkQuickMediaAssets(assets, quickMediaGroupLimit)
+	}
+	return splitQuickMediaAssets(assets)
 }
 
 func splitQuickMediaAssets(assets []quickMediaAsset) [][]quickMediaAsset {
@@ -707,20 +769,13 @@ func chunkQuickMediaAssets(items []quickMediaAsset, size int) [][]quickMediaAsse
 		return nil
 	}
 	out := make([][]quickMediaAsset, 0, (len(items)+size-1)/size)
-	chunk := make([]quickMediaAsset, 0, size)
-	chunkBytes := 0
-	for _, item := range items {
-		itemBytes := len(item.Data)
-		if len(chunk) > 0 && (len(chunk) >= size || chunkBytes+itemBytes > quickMediaGroupMaxBytes) {
-			out = append(out, chunk)
-			chunk = make([]quickMediaAsset, 0, size)
-			chunkBytes = 0
+	for len(items) > 0 {
+		n := size
+		if len(items) < n {
+			n = len(items)
 		}
-		chunk = append(chunk, item)
-		chunkBytes += itemBytes
-	}
-	if len(chunk) > 0 {
-		out = append(out, chunk)
+		out = append(out, items[:n])
+		items = items[n:]
 	}
 	return out
 }

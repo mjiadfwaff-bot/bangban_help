@@ -25,7 +25,8 @@ func (s *sLazySheepTGGo) defaultBindingPluginState(ctx context.Context, botKey s
 		state["footer.useFooter"] = true
 	}
 	if cfg := plugins["collector"]; cfg != nil && cfg.Enabled {
-		state["collector.revealInBot"] = true
+		state["collector.revealInBot"] = false
+		state[collectorMergeVerifyGroupStateKey] = false
 		state[collectorAutoPullStateKey] = true
 	}
 	return state

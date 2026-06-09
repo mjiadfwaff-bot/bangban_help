@@ -83,6 +83,9 @@ func (h *bindCommand) Key() string              { return "bind" }
 func (h *bindCommand) Pattern() string          { return "bind" }
 func (h *bindCommand) MatchType() bot.MatchType { return bot.MatchTypeCommandStartOnly }
 func (h *bindCommand) Description() string      { return "绑定资源链接" }
+func (h *bindCommand) Match(update *models.Update) bool {
+	return bindCommandMatch(update, h.Pattern(), h.MatchType(), h.Key(), "绑定")
+}
 func (h *bindCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
 	if !pluginEnabled(ctx, "collector") {
 		return nil
@@ -96,6 +99,9 @@ func (h *bindReviewCommand) Key() string              { return "bind_review" }
 func (h *bindReviewCommand) Pattern() string          { return "bind_review" }
 func (h *bindReviewCommand) MatchType() bot.MatchType { return bot.MatchTypeCommandStartOnly }
 func (h *bindReviewCommand) Description() string      { return "绑定审核采集链接" }
+func (h *bindReviewCommand) Match(update *models.Update) bool {
+	return bindCommandMatch(update, h.Pattern(), h.MatchType(), h.Key(), "绑定审核")
+}
 func (h *bindReviewCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
 	if !pluginEnabled(ctx, "collector") {
 		return nil
@@ -132,6 +138,73 @@ func (h *bindPublishCommand) Handle(ctx context.Context, b *bot.Bot, update *mod
 	return err
 }
 
+func bindCommandMatch(update *models.Update, pattern string, matchType bot.MatchType, key string, aliases ...string) bool {
+	if matchBindMessage(messageFromUpdate(update), pattern, matchType, key, aliases...) {
+		return true
+	}
+	return false
+}
+
+func matchBindMessage(msg *models.Message, pattern string, matchType bot.MatchType, key string, aliases ...string) bool {
+	if msg == nil {
+		return false
+	}
+	if matchBindTextAlias(msg.Text, key) {
+		return true
+	}
+	for _, e := range msg.Entities {
+		if e.Type != models.MessageEntityTypeBotCommand {
+			continue
+		}
+		if e.Offset != 0 && matchType == bot.MatchTypeCommandStartOnly {
+			continue
+		}
+		end := e.Offset + e.Length
+		if end > len(msg.Text) || e.Offset < 0 {
+			continue
+		}
+		if msg.Text[e.Offset+1:end] == pattern {
+			return true
+		}
+	}
+	text := strings.TrimSpace(msg.Text)
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || !strings.HasPrefix(text, alias) {
+			continue
+		}
+		tail := strings.TrimSpace(strings.TrimPrefix(text, alias))
+		if tail == "" || strings.HasPrefix(tail, "http://") || strings.HasPrefix(tail, "https://") {
+			return true
+		}
+	}
+	return false
+}
+
+func matchBindTextAlias(text, key string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, alias := range bindTextAliases(key) {
+		if text == alias || strings.HasPrefix(text, alias+" ") || strings.HasPrefix(text, alias+"@") {
+			return true
+		}
+	}
+	return false
+}
+
+func bindTextAliases(key string) []string {
+	switch key {
+	case "bind":
+		return []string{"/bind", "/绑定", "绑定"}
+	case "bind_review":
+		return []string{"/bind_review", "/绑定审核", "绑定审核"}
+	default:
+		return nil
+	}
+}
+
 func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mode string, commands ...string) error {
 	msg := messageFromUpdate(update)
 	if msg == nil {
@@ -149,7 +222,7 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 			IsBot:        msg.From.IsBot,
 		})
 	}
-	args := commandArgs(msg.Text, commands...)
+	args := bindCommandArgs(msg.Text, commands...)
 	if args == "" {
 		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
@@ -164,7 +237,7 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		})
 		return err
 	}
-	sourceURL := strings.Fields(args)[0]
+	sourceURL := firstField(args)
 	if err := service.SysLazysheepTggo().BindSource(ctx, &sysin.BindSourceInp{
 		BotKey:    botKey,
 		ChatID:    msg.Chat.ID,
@@ -194,6 +267,33 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		}
 	}
 	return err
+}
+
+func bindCommandArgs(text string, commands ...string) string {
+	args := commandArgs(text, commands...)
+	if strings.TrimSpace(args) != strings.TrimSpace(text) {
+		return args
+	}
+	text = strings.TrimSpace(text)
+	for _, command := range commands {
+		command = strings.TrimSpace(command)
+		if command == "" || !strings.HasPrefix(text, command) {
+			continue
+		}
+		tail := strings.TrimSpace(strings.TrimPrefix(text, command))
+		if strings.HasPrefix(tail, "http://") || strings.HasPrefix(tail, "https://") {
+			return tail
+		}
+	}
+	return args
+}
+
+func firstField(text string) string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func collectorBindText(ctx context.Context, sourceURL string) string {

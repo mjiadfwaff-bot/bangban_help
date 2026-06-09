@@ -313,7 +313,7 @@ func buildBindingPluginKeyboard(state *model.State, binding *model.BindingRecord
 			if bindingActionPlacement(action) != placement {
 				continue
 			}
-			label := resolveBindingActionLabel(plugin.Key, action, binding)
+			label := resolveBindingActionLabel(plugin, action, binding)
 			if label == "" {
 				continue
 			}
@@ -528,7 +528,11 @@ func callbackChatID(callback *models.CallbackQuery) int64 {
 	return 0
 }
 
-func resolveBindingActionLabel(pluginKey string, action model.PluginBindingAction, binding *model.BindingRecord) string {
+func resolveBindingActionLabel(plugin *model.PluginConfig, action model.PluginBindingAction, binding *model.BindingRecord) string {
+	pluginKey := ""
+	if plugin != nil {
+		pluginKey = plugin.Key
+	}
 	switch pluginKey {
 	case "footer":
 		if action.Key == "useFooter" {
@@ -543,7 +547,10 @@ func resolveBindingActionLabel(pluginKey string, action model.PluginBindingActio
 			return fmt.Sprintf("%s：%s", action.Label, boolText(binding.LocationEnabled, "开", "关"))
 		}
 		if action.Key == "revealInBot" {
-			return fmt.Sprintf("%s：%s", action.Label, boolText(collectorRevealLinksEnabled(nil, binding.PluginState), "开", "关"))
+			return fmt.Sprintf("%s：%s", action.Label, boolText(collectorRevealLinksEnabled(map[string]*model.PluginConfig{pluginKey: plugin}, binding.PluginState), "开", "关"))
+		}
+		if action.Key == "mergeVerifyInGroup" {
+			return fmt.Sprintf("%s：%s", action.Label, boolText(collectorMergeVerifyGroupEnabled(map[string]*model.PluginConfig{pluginKey: plugin}, binding.PluginState), "开", "关"))
 		}
 		if action.Key == "autoPull" {
 			return fmt.Sprintf("%s：%s", action.Label, boolText(collectorAutoPullEnabled(nil, binding.PluginState), "开", "关"))

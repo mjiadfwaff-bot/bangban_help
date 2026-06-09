@@ -51,9 +51,10 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
 		settings = cfg.Settings
 	}
+	settings = withBindingCollectorSettings(settings, plugins, binding.PluginState)
 	caption := buildNoteCaption(note, rt.cfg, binding, settings, plugins)
 	g.Log().Debugf(ctx, "%s 推送采集笔记开始 botKey:%s binding:%s noteId:%d targetChat:%d reviewMode:%t", pullTraceTag(ctx), botKey, binding.Key, noteID, targetChatID, reviewMode)
-	msg, err := s.sendCollectedNoteMainMessage(ctx, rt.client, targetChatID, note, caption)
+	msg, err := s.sendCollectedNoteMainMessage(ctx, rt.client, targetChatID, note, caption, settings)
 	if err != nil {
 		return 0, err
 	}
@@ -69,8 +70,9 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	return msg.ID, nil
 }
 
-func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, chatID int64, note *pushNote, caption string) (*models.Message, error) {
-	mediaAssets, err := buildQuickMediaAssets(ctx, note.Items)
+func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, chatID int64, note *pushNote, caption string, settings map[string]any) (*models.Message, error) {
+	items, merged := selectQuickMediaItemsForPush(note.Items, settings)
+	mediaAssets, err := buildQuickMediaAssets(ctx, items)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +83,7 @@ func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, clien
 			ParseMode: models.ParseModeHTML,
 		})
 	}
-	msgs, err := sendQuickMediaAssets(ctx, client, chatID, mediaAssets, caption)
+	msgs, err := sendQuickMediaAssetsWithMode(ctx, client, chatID, mediaAssets, caption, merged)
 	if err != nil {
 		return nil, err
 	}
@@ -161,6 +163,7 @@ func (s *sLazySheepTGGo) loadPushNote(ctx context.Context, noteID int64) (*pushN
 			SubTitle:    item.SubTitle,
 			Content:     item.Content,
 			Duration:    item.Duration,
+			VerifyVideo: item.VerifyVideo > 0,
 			AspectRatio: item.AspectRatio,
 			TgFileID:    item.TgFileId,
 		})
@@ -188,7 +191,7 @@ func (s *sLazySheepTGGo) pushCollectedNotePublicExtras(ctx context.Context, clie
 	if client == nil || note == nil || binding == nil || chatID == 0 {
 		return nil
 	}
-	if binding.VerifyEnabled && pushSettingBool(settings, "showVerifyLink", true) {
+	if binding.VerifyEnabled && pushSettingBool(settings, "showVerifyLink", true) && !pushSettingBool(settings, "mergeVerifyInGroup", false) {
 		for _, item := range note.VerifyVideos {
 			if err := sendPublicVerifyVideo(ctx, client, chatID, note, item); err != nil {
 				return err

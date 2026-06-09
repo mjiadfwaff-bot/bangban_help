@@ -32,9 +32,9 @@ const (
 	pushTaskStatusDead   = 5
 	pushTaskMaxAttempts  = 5
 	pushRetryScanLimit   = 50
-	pushReadyScanLimit   = 100
-	pushGlobalWorkers    = 12
-	pushChatInterval     = 20 * time.Second
+	pushReadyScanLimit   = 200
+	pushGlobalWorkers    = 24
+	pushChatInterval     = 10 * time.Second
 	pushDoingTimeout     = 15 * time.Minute
 	pushLogStatusSuccess = 1
 	pushLogStatusFailed  = 2
@@ -394,40 +394,40 @@ func (s *sLazySheepTGGo) fillPushQueueFailedLogs(ctx context.Context, res *lsysi
 	return nil
 }
 
-func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, binding *model.BindingRecord, noteID int64, contentID int64, chatID int64) (*lsysin.PushNoteTask, error) {
+func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, binding *model.BindingRecord, noteID int64, contentID int64, chatID int64) (*lsysin.PushNoteTask, bool, error) {
 	if binding == nil {
-		return nil, gerror.New("绑定关系为空")
+		return nil, false, gerror.New("绑定关系为空")
 	}
 	targetChatID := pushTargetChatID(binding, chatID)
 	if targetChatID == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if existing, err := s.existingPushNoteTask(ctx, botKey, binding, noteID, targetChatID); err != nil {
-		return nil, err
+		return nil, false, err
 	} else if existing != nil {
 		g.Log().Debugf(ctx, "推送任务已存在，跳过重复入队 bot:%s binding:%s noteId:%d task:%d status:%d", botKey, binding.Key, noteID, existing.Id, existing.Status)
 		recordPushTaskLog(ctx, pushTaskFromRecord(existing), pushLogStatusSkipped, existing.Attempts, 0, 0, "推送任务已存在，跳过重复入队")
-		return pushTaskFromRecord(existing), nil
+		return pushTaskFromRecord(existing), false, nil
 	}
 	fingerprint, err := s.pushDedupFingerprint(ctx, contentID, noteID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if seen, err := s.pushDedupSeen(ctx, botKey, binding.Key, targetChatID, fingerprint); err != nil {
-		return nil, err
+		return nil, false, err
 	} else if seen {
 		task := &lsysin.PushNoteTask{BotKey: botKey, BindingKey: binding.Key, SourceURL: binding.SourceURL, NoteID: noteID, ContentID: contentID, ChatID: targetChatID}
 		recordPushTaskLog(ctx, task, pushLogStatusSkipped, 0, 0, 0, "频道内重复内容，跳过推送")
-		return task, nil
+		return task, false, nil
 	}
 	reserved, err := s.pushDedupReserve(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprint)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !reserved {
 		task := &lsysin.PushNoteTask{BotKey: botKey, BindingKey: binding.Key, SourceURL: binding.SourceURL, NoteID: noteID, ContentID: contentID, ChatID: targetChatID}
 		recordPushTaskLog(ctx, task, pushLogStatusSkipped, 0, 0, 0, "频道内重复内容，跳过推送")
-		return task, nil
+		return task, false, nil
 	}
 	now := gtime.Now()
 	row := g.Map{
@@ -446,14 +446,14 @@ func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, bin
 	taskID, err := g.DB().Model("hg_addon_lazysheep_tggo_push_queue").Data(row).InsertAndGetId()
 	if err != nil {
 		if !isTableNotExistError(err) {
-			return nil, gerror.Wrap(err, "创建推送任务失败")
+			return nil, false, gerror.Wrap(err, "创建推送任务失败")
 		}
 		if ensureErr := s.ensurePushQueueTable(ctx); ensureErr != nil {
-			return nil, gerror.Wrap(ensureErr, "初始化推送任务表失败")
+			return nil, false, gerror.Wrap(ensureErr, "初始化推送任务表失败")
 		}
 		taskID, err = g.DB().Model("hg_addon_lazysheep_tggo_push_queue").Data(row).InsertAndGetId()
 		if err != nil {
-			return nil, gerror.Wrap(err, "创建推送任务失败")
+			return nil, false, gerror.Wrap(err, "创建推送任务失败")
 		}
 	}
 	task := &lsysin.PushNoteTask{
@@ -480,7 +480,7 @@ func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, bin
 	if err = s.pushDedupRemember(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprint, taskID, 1); err != nil {
 		g.Log().Warningf(ctx, "记录推送去重失败 task:%d err:%+v", taskID, err)
 	}
-	return task, nil
+	return task, true, nil
 }
 
 func (s *sLazySheepTGGo) existingPushNoteTask(ctx context.Context, botKey string, binding *model.BindingRecord, noteID int64, chatID int64) (*pushTaskRecord, error) {
@@ -726,6 +726,12 @@ func (s *sLazySheepTGGo) clearPushChannelState(ctx context.Context, botKey strin
 		Where("chat_id", targetChatID).
 		Delete(); err != nil {
 		return gerror.Wrap(err, "清理频道推送去重失败")
+	}
+	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_push_queue").
+		Where("bot_key", botKey).
+		Where("chat_id", targetChatID).
+		Delete(); err != nil {
+		return gerror.Wrap(err, "清理频道推送队列失败")
 	}
 	return clearPushDedupCache(ctx, botKey, targetChatID)
 }

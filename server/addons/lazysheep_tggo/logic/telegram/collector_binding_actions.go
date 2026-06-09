@@ -11,6 +11,7 @@ import (
 )
 
 const collectorRevealLinksStateKey = "collector.revealInBot"
+const collectorMergeVerifyGroupStateKey = "collector.mergeVerifyInGroup"
 const collectorAutoPullStateKey = "collector.autoPull"
 const collectorAutoPullStoppedAtKey = "collector.autoPullStoppedAt"
 const collectorAutoPullStopReasonKey = "collector.autoPullStopReason"
@@ -18,6 +19,7 @@ const collectorAutoPullStopReasonKey = "collector.autoPullStopReason"
 func init() {
 	RegisterBindingPluginAction("collector", "reveal_links", handleCollectorRevealLinks)
 	RegisterBindingPluginAction("collector", "auto_pull", handleCollectorAutoPull)
+	RegisterBindingPluginAction("collector", "merge_verify_group", handleCollectorMergeVerifyGroup)
 }
 
 func collectorRevealLinksEnabled(plugins map[string]*model.PluginConfig, bindingState map[string]any) bool {
@@ -31,12 +33,26 @@ func collectorRevealLinksEnabled(plugins map[string]*model.PluginConfig, binding
 			return v
 		}
 	}
-	return true
+	return false
 }
 
 func collectorAutoPullEnabled(plugins map[string]*model.PluginConfig, bindingState map[string]any) bool {
 	if bindingState != nil {
 		if v, ok := bindingState[collectorAutoPullStateKey].(bool); ok {
+			return v
+		}
+	}
+	return false
+}
+
+func collectorMergeVerifyGroupEnabled(plugins map[string]*model.PluginConfig, bindingState map[string]any) bool {
+	if bindingState != nil {
+		if v, ok := bindingState[collectorMergeVerifyGroupStateKey].(bool); ok {
+			return v
+		}
+	}
+	if cfg := plugins["collector"]; cfg != nil && cfg.Settings != nil {
+		if v, ok := cfg.Settings["mergeVerifyInGroup"].(bool); ok {
 			return v
 		}
 	}
@@ -85,6 +101,21 @@ func handleCollectorAutoPull(ctx context.Context, b *bot.Bot, update *models.Upd
 		return err
 	}
 	return refreshBindingConfigPanel(ctx, b, update, fmt.Sprintf("自动拉取已%s。", boolText(next, "开启", "关闭")))
+}
+
+func handleCollectorMergeVerifyGroup(ctx context.Context, b *bot.Bot, update *models.Update, action *BindingPluginActionContext) error {
+	if action == nil || action.Binding == nil {
+		return replyCallback(ctx, b, update, "绑定关系不存在。")
+	}
+	if action.Binding.PluginState == nil {
+		action.Binding.PluginState = map[string]any{}
+	}
+	next := !collectorMergeVerifyGroupEnabled(pluginConfigsForState(action.State, action.Binding.BotKey), action.Binding.PluginState)
+	action.Binding.PluginState[collectorMergeVerifyGroupStateKey] = next
+	if err := service.SysLazysheepTggo().SaveState(ctx, action.State); err != nil {
+		return err
+	}
+	return refreshBindingConfigPanel(ctx, b, update, fmt.Sprintf("验证视频合并已%s。", boolText(next, "开启", "关闭")))
 }
 
 func openBindingDefaultPanel(ctx context.Context, b *bot.Bot, update *models.Update) error {
@@ -177,6 +208,7 @@ func buildBindingConfigTextWithState(state *model.State, binding *model.BindingR
 		reveal = boolText(collectorRevealLinksStateFromState(state, binding.BotKey, binding), "开启", "关闭")
 	}
 	autoPull := boolText(collectorAutoPullEnabled(pluginConfigsForState(state, binding.BotKey), binding.PluginState), "开启", "关闭")
+	mergeVerify := boolText(collectorMergeVerifyGroupEnabled(pluginConfigsForState(state, binding.BotKey), binding.PluginState), "开启", "关闭")
 	autoPullDetail := ""
 	if autoPull == "关闭" && binding.PluginState != nil {
 		reason, _ := binding.PluginState[collectorAutoPullStopReasonKey].(string)
@@ -185,5 +217,5 @@ func buildBindingConfigTextWithState(state *model.State, binding *model.BindingR
 			autoPullDetail = fmt.Sprintf("\n自动关闭原因：%s\n自动关闭时间：%s", reason, stoppedAt)
 		}
 	}
-	return fmt.Sprintf("绑定配置\n\n当前链接：%s\n验证/位置机器人查看：%s\n自定义底部：%s\n自动拉取：%s%s\n\n下面这些按钮都来自插件配置。", binding.SourceURL, reveal, footer, autoPull, autoPullDetail)
+	return fmt.Sprintf("绑定配置\n\n当前链接：%s\n验证/位置机器人查看：%s\n自定义底部：%s\n自动拉取：%s\n验证视频合并：%s%s\n\n下面这些按钮都来自插件配置。", binding.SourceURL, reveal, footer, autoPull, mergeVerify, autoPullDetail)
 }

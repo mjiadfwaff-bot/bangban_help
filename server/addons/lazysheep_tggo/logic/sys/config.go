@@ -459,13 +459,18 @@ pullLocked:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if _, pushErr := s.enqueuePushNote(ctx, in.BotKey, binding, stored.NoteId, contentID, in.ChatID); pushErr != nil {
+			_, queued, pushErr := s.enqueuePushNote(ctx, in.BotKey, binding, stored.NoteId, contentID, in.ChatID)
+			if pushErr != nil {
 				summary.PushFailed++
 				summary.AddError(fmt.Sprintf("推送入队失败 contentID:%s", msg.ContentId), pushErr)
 				g.Log().Warningf(ctx, "%s BangChat 笔记推送任务入队失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, pushErr)
 				continue
 			}
-			summary.PushQueued++
+			if queued {
+				summary.PushQueued++
+			} else {
+				summary.Skipped++
+			}
 			if cursorID > 0 && cursorID > successLatestCursorID {
 				successLatestCursorID = cursorID
 				successLatestCursor = msg.Id
@@ -476,12 +481,18 @@ pullLocked:
 					successLatestCursor = msg.Id
 				}
 			}
-			timer.Report("入库并加入推送队列完成 contentID:%s。", msg.ContentId)
+			if queued {
+				timer.Report("准备开始推送 contentID:%s。", msg.ContentId)
+			} else {
+				timer.Report("当前频道已存在相同推送记录，已跳过 contentID:%s。", msg.ContentId)
+			}
 			if fingerprint != "" && stored != nil {
 				batchSeen[fingerprint] = struct{}{}
-				if err := pullDedupRemember(ctx, dedupScope, fingerprint, stored.NoteId, sourceURLs); err != nil {
+				dedupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				if err := pullDedupRemember(dedupCtx, dedupScope, fingerprint, stored.NoteId, sourceURLs); err != nil {
 					g.Log().Warningf(ctx, "记录采集去重信息失败 botKey:%s binding:%s err:%+v", in.BotKey, binding.Key, err)
 				}
+				cancel()
 			}
 		}
 		return nil
