@@ -61,6 +61,15 @@ func (c *cConfig) Bots(ctx context.Context, req *config.BotsReq) (res *config.Bo
 	return
 }
 
+func (c *cConfig) ChannelList(ctx context.Context, req *config.ChannelListReq) (res *config.ChannelListRes, err error) {
+	data, err := service.SysLazysheepTggo().ChannelList(ctx, &req.ChannelListInp)
+	if err != nil {
+		return
+	}
+	res = &config.ChannelListRes{ChannelListModel: data}
+	return
+}
+
 func (c *cConfig) InspectBot(ctx context.Context, req *config.InspectBotReq) (res *config.InspectBotRes, err error) {
 	data, err := service.SysLazysheepTggo().InspectBot(ctx, &req.BotInspectInp)
 	if err != nil {

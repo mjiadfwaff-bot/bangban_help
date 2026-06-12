@@ -259,6 +259,46 @@ type BindingAutoPullControlInp struct {
 	AutoPull   bool   `json:"autoPull"`
 }
 
+type ChannelListInp struct {
+	BotKey  string `json:"botKey"`
+	Keyword string `json:"keyword"`
+	Status  string `json:"status"`
+}
+
+type ChannelListModel struct {
+	List []*ChannelListItem `json:"list"`
+}
+
+type ChannelListItem struct {
+	BotKey             string `json:"botKey"`
+	BotName            string `json:"botName"`
+	BindingKey         string `json:"bindingKey"`
+	SourceURL          string `json:"sourceUrl"`
+	ChatID             int64  `json:"chatId"`
+	ChatTitle          string `json:"chatTitle"`
+	ChatUsername       string `json:"chatUsername"`
+	ChatLabel          string `json:"chatLabel"`
+	ChatType           string `json:"chatType"`
+	AddedBy            int64  `json:"addedBy"`
+	AddedAt            string `json:"addedAt"`
+	UpdatedAt          string `json:"updatedAt"`
+	LastPullID         int64  `json:"lastPullId"`
+	LastCursor         string `json:"lastCursor"`
+	AutoPull           bool   `json:"autoPull"`
+	AutoPullStoppedAt  string `json:"autoPullStoppedAt"`
+	AutoPullStopReason string `json:"autoPullStopReason"`
+	BindingStatus      string `json:"bindingStatus"`
+	WorkStatus         string `json:"workStatus"`
+	WorkStatusType     string `json:"workStatusType"`
+	NoteCount          int    `json:"noteCount"`
+	Pending            int    `json:"pending"`
+	Doing              int    `json:"doing"`
+	Retry              int    `json:"retry"`
+	Done               int    `json:"done"`
+	Dead               int    `json:"dead"`
+	LastError          string `json:"lastError"`
+}
+
 type PullMonitorStep struct {
 	Name      string `json:"name"`
 	StepMs    int64  `json:"stepMs"`
@@ -320,6 +360,7 @@ type BindSourceInp struct {
 	ReviewChatID  int64  `json:"reviewChatId"`
 	PublishChatID int64  `json:"publishChatId"`
 	ChatID        int64  `json:"chatId"`
+	OperatorID    int64  `json:"operatorId"`
 	Mode          string `json:"mode"`
 	AutoPush      bool   `json:"autoPush"`
 }

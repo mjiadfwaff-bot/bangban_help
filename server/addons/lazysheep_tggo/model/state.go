@@ -56,6 +56,7 @@ type UserRecord struct {
 }
 
 type BindingRecord struct {
+	ID              int64          `json:"id"`
 	Key             string         `json:"key"`
 	BotKey          string         `json:"botKey"`
 	SourceURL       string         `json:"sourceUrl"`
@@ -309,6 +310,7 @@ func DefaultPluginConfigs() map[string]*PluginConfig {
 				"showVerifyLink":     true,
 				"showLocationLink":   true,
 				"mergeVerifyInGroup": true,
+				"bindNotify":         false,
 				"revealInBot":        false,
 				"footer":             "",
 				"bindHelpText":       "请发送 /bind <BangChat链接>。绑定后可在下方直接配置当前频道插件。",

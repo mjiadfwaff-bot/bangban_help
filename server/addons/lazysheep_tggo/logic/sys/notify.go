@@ -107,6 +107,66 @@ func (s *sLazySheepTGGo) NotifyAllUsers(ctx context.Context, botKey string, text
 	return s.NotifyUsers(ctx, botKey, chatIDs, text)
 }
 
+func (s *sLazySheepTGGo) NotifyBindingCreated(ctx context.Context, botKey string, chatID int64, sourceURL string, operatorID int64, mode string) error {
+	state, err := s.GetState(ctx)
+	if err != nil {
+		return err
+	}
+	cfg := state.Bots[botKey]
+	if cfg == nil || cfg.MemberId == 0 || strings.TrimSpace(cfg.Token) == "" {
+		return nil
+	}
+	if cfg.MemberId == operatorID {
+		return nil
+	}
+	plugins := cfg.Plugins
+	if plugins == nil {
+		plugins = state.Plugins
+	}
+	collector := plugins["collector"]
+	if collector == nil || collector.Settings == nil {
+		return nil
+	}
+	if enabled, ok := collector.Settings["bindNotify"].(bool); !ok || !enabled {
+		return nil
+	}
+	chat := s.monitorChatLabels(ctx)[monitorChatMapKey(botKey, chatID)]
+	label := monitorChatLabelText(chat, chatID)
+	lines := []string{"有新的频道完成绑定。"}
+	if strings.TrimSpace(cfg.Username) != "" {
+		lines = append(lines, "机器人：@"+strings.TrimPrefix(strings.TrimSpace(cfg.Username), "@"))
+	} else if strings.TrimSpace(cfg.DisplayName) != "" {
+		lines = append(lines, "机器人："+strings.TrimSpace(cfg.DisplayName))
+	} else {
+		lines = append(lines, "机器人："+botKey)
+	}
+	if strings.TrimSpace(label) != "" {
+		lines = append(lines, "频道："+strings.TrimSpace(label))
+	}
+	lines = append(lines, fmt.Sprintf("频道ID：%d", chatID))
+	if operatorID != 0 {
+		lines = append(lines, fmt.Sprintf("操作人ID：%d", operatorID))
+	}
+	if strings.TrimSpace(mode) != "" {
+		lines = append(lines, "绑定模式："+bindingNotifyModeText(mode))
+	}
+	if strings.TrimSpace(sourceURL) != "" {
+		lines = append(lines, "绑定链接："+strings.TrimSpace(sourceURL))
+	}
+	return s.sendTelegramText(ctx, cfg.Token, cfg.MemberId, strings.Join(lines, "\n"))
+}
+
+func bindingNotifyModeText(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "review":
+		return "审核模式"
+	case "publish":
+		return "发布频道"
+	default:
+		return "快速采集"
+	}
+}
+
 func formatBotDeleteNotice(name, username string) string {
 	lines := []string{"你的机器人已删除。"}
 	if strings.TrimSpace(name) != "" {

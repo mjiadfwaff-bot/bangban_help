@@ -44,6 +44,15 @@ type BotsRes struct {
 	Bots map[string]*model.BotConfig `json:"bots"`
 }
 
+type ChannelListReq struct {
+	g.Meta `path:"/config/channelList" method:"get" tags:"懒羊羊TGGo" summary:"频道使用列表"`
+	sysin.ChannelListInp
+}
+
+type ChannelListRes struct {
+	*sysin.ChannelListModel
+}
+
 type InspectBotReq struct {
 	g.Meta `path:"/config/inspectBot" method:"post" tags:"懒羊羊TGGo" summary:"检测机器人"`
 	sysin.BotInspectInp

@@ -532,6 +532,12 @@ func (s *sLazySheepTGGo) ensureAdminMenus(ctx context.Context) error {
 			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 40, "remark": "", "status": 1,
 			"updated_at": now, "created_at": now,
 		},
+		{
+			"id": 3006, "pid": 3001, "level": 3, "tree": "tr_3000 tr_3001 ", "title": "频道列表", "name": "addons_lazysheep_tggo_channel_list", "path": "channel-list", "icon": "", "type": 2,
+			"redirect": "", "permissions": "/lazysheep_tggo/config/channelList", "permission_name": "", "component": "/addons/lazysheep_tggo/config/channel-list", "always_show": 0, "active_menu": "",
+			"is_root": 0, "is_frame": 0, "frame_src": "", "keep_alive": 0, "hidden": 0, "affix": 0, "sort": 35, "remark": "", "status": 1,
+			"updated_at": now, "created_at": now,
+		},
 	}
 	for _, menu := range menus {
 		if err := upsertAdminMenu(ctx, menu); err != nil {

@@ -16,6 +16,7 @@ const (
 	collectorAutoPullStateKey      = "collector.autoPull"
 	collectorAutoPullStoppedAtKey  = "collector.autoPullStoppedAt"
 	collectorAutoPullStopReasonKey = "collector.autoPullStopReason"
+	collectorBindOperatorIDKey     = "collector.bindOperatorId"
 )
 
 func (s *sLazySheepTGGo) defaultBindingPluginState(ctx context.Context, botKey string) map[string]any {

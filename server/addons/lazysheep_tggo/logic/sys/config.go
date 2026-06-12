@@ -248,6 +248,9 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 			lastCursor = existing.LastCursor
 		}
 	}
+	if in.OperatorID > 0 {
+		pluginState[collectorBindOperatorIDKey] = in.OperatorID
+	}
 	if err := s.upsertBinding(ctx, key, &model.BindingRecord{
 		Key:             key,
 		BotKey:          in.BotKey,

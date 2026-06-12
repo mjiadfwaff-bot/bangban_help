@@ -238,11 +238,16 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		return err
 	}
 	sourceURL := firstField(args)
+	operatorID := int64(0)
+	if msg.From != nil {
+		operatorID = msg.From.ID
+	}
 	if err := service.SysLazysheepTggo().BindSource(ctx, &sysin.BindSourceInp{
-		BotKey:    botKey,
-		ChatID:    msg.Chat.ID,
-		Mode:      mode,
-		SourceURL: sourceURL,
+		BotKey:     botKey,
+		ChatID:     msg.Chat.ID,
+		OperatorID: operatorID,
+		Mode:       mode,
+		SourceURL:  sourceURL,
 	}); err != nil {
 		_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
@@ -262,6 +267,12 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		if msg.From != nil {
 			userID = msg.From.ID
 		}
+		go func() {
+			notifyCtx := WithBotKey(context.Background(), botKey)
+			if notifyErr := service.SysLazysheepTggo().NotifyBindingCreated(notifyCtx, botKey, msg.Chat.ID, sourceURL, userID, mode); notifyErr != nil {
+				g.Log().Warningf(ctx, "发送绑定通知失败 bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, notifyErr)
+			}
+		}()
 		if panelErr := sendBindingConfigPanel(ctx, b, botKey, msg.Chat.ID, userID); panelErr != nil {
 			g.Log().Warningf(ctx, "发送绑定配置面板失败 bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, panelErr)
 		}

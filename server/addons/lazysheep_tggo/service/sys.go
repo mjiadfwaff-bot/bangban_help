@@ -26,6 +26,7 @@ type (
 		GetState(ctx context.Context) (res *model.State, err error)
 		SaveState(ctx context.Context, state *model.State) error
 		SaveConfig(ctx context.Context, in *sysin.UpdateConfigInp) error
+		ChannelList(ctx context.Context, in *sysin.ChannelListInp) (res *sysin.ChannelListModel, err error)
 		InspectBot(ctx context.Context, in *sysin.BotInspectInp) (res *sysin.BotInspectModel, err error)
 		DeleteBot(ctx context.Context, in *sysin.BotDeleteInp) error
 		StartBot(ctx context.Context, in *sysin.BotStartInp) error
@@ -45,6 +46,7 @@ type (
 		ResetBindingPull(ctx context.Context, botKey string, chatID int64) (message string, err error)
 		ClearBindingNotes(ctx context.Context, botKey string, chatID int64) (message string, err error)
 		SetBindingPublishChat(ctx context.Context, botKey string, chatID int64) (message string, err error)
+		NotifyBindingCreated(ctx context.Context, botKey string, chatID int64, sourceURL string, operatorID int64, mode string) error
 		SignIn(ctx context.Context, in *sysin.SignInInp) (message string, err error)
 		StoreNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error)
 

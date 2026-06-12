@@ -32,6 +32,14 @@ export function bots(params = {}) {
   });
 }
 
+export function channelList(params = {}) {
+  return http.request({
+    url: '/lazysheep_tggo/config/channelList',
+    method: 'get',
+    params,
+  });
+}
+
 export function inspectBot(params) {
   return http.request({
     url: '/lazysheep_tggo/config/inspectBot',

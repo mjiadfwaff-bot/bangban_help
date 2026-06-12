@@ -886,6 +886,11 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	if record == nil || record.Status == pushTaskStatusDead {
 		return nil
 	}
+	if seen, err := s.pushDedupSeenForTask(ctx, task); err != nil {
+		g.Log().Warningf(ctx, "推送前检查频道去重状态失败 task:%d err:%+v", task.TaskID, err)
+	} else if !seen {
+		g.Log().Warningf(ctx, "推送前频道去重记录不存在，继续执行但保留任务幂等保护 task:%d bot:%s chat:%d note:%d", task.TaskID, task.BotKey, task.ChatID, task.NoteID)
+	}
 	messageID, pushErr := s.pushCollectedNote(ctx, task.BotKey, binding, task.NoteID, task.ChatID)
 	elapsed := time.Since(started)
 	if pushErr == nil {
@@ -903,6 +908,19 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	}
 	errText := strings.TrimSpace(pushErr.Error())
 	recordPushChatError(task.BotKey, task.ChatID, pushErr)
+	if isAmbiguousTelegramSendError(pushErr) {
+		errText = "Telegram 发送结果未知，已停止自动重试以避免重复推送：" + errText
+		_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_queue").WherePri(task.TaskID).Data(g.Map{
+			"status":      pushTaskStatusDead,
+			"last_error":  errText,
+			"finished_at": gtime.Now(),
+			"updated_at":  gtime.Now(),
+		}).Update()
+		recordPushTaskLog(ctx, task, pushLogStatusFailed, attempt, elapsed.Milliseconds(), 0, errText)
+		recordPushQueueMonitorEvent(ctx, task, false, errText, elapsed)
+		g.Log().Warningf(ctx, "Telegram 推送结果未知，停止自动重试避免重复发送 task:%d bot:%s chat:%d note:%d err:%+v", task.TaskID, task.BotKey, task.ChatID, task.NoteID, pushErr)
+		return nil
+	}
 	if attempt >= record.MaxAttempts || !isRetriablePullError(pushErr) {
 		_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_queue").WherePri(task.TaskID).Data(g.Map{
 			"status":      pushTaskStatusDead,
@@ -930,6 +948,38 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	}
 	recordPushQueueMonitorEvent(ctx, task, false, errText, elapsed)
 	return nil
+}
+
+func (s *sLazySheepTGGo) pushDedupSeenForTask(ctx context.Context, task *lsysin.PushNoteTask) (bool, error) {
+	if task == nil {
+		return false, nil
+	}
+	fingerprint, err := s.pushDedupFingerprint(ctx, task.ContentID, task.NoteID)
+	if err != nil {
+		return false, err
+	}
+	return s.pushDedupSeen(ctx, task.BotKey, task.BindingKey, task.ChatID, fingerprint)
+}
+
+func isAmbiguousTelegramSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "too many requests") || strings.Contains(text, "retry_after") {
+		return false
+	}
+	sendMethod := strings.Contains(text, "sendmediagroup") ||
+		strings.Contains(text, "sendphoto") ||
+		strings.Contains(text, "sendvideo") ||
+		strings.Contains(text, "sendmessage")
+	if !sendMethod {
+		return false
+	}
+	return strings.Contains(text, "timeout awaiting response headers") ||
+		strings.Contains(text, "client.timeout exceeded while awaiting headers") ||
+		strings.Contains(text, "context deadline exceeded") ||
+		strings.Contains(text, "deadline exceeded")
 }
 
 func waitPushChatTurn(ctx context.Context, botKey string, chatID int64) error {
