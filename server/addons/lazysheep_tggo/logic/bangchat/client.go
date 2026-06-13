@@ -29,7 +29,10 @@ import (
 	"hotgo/internal/library/cache"
 )
 
-const apiBaseURL = "https://seats.bangchats.top/api"
+const (
+	apiBaseURL       = "https://seats.bangchats.top/api"
+	publicAPIBaseURL = "https://note.bangchat.icu/api"
+)
 
 var (
 	httpClient = &http.Client{
@@ -102,11 +105,12 @@ func buildTransport(proxyRaw string) (*http.Transport, error) {
 }
 
 type Client struct {
-	secret string
-	iv     string
-	pubKey string
-	priv   *ecdsa.PrivateKey
-	jwt    string
+	apiBase string
+	secret  string
+	iv      string
+	pubKey  string
+	priv    *ecdsa.PrivateKey
+	jwt     string
 }
 
 type PullOption struct {
@@ -150,6 +154,9 @@ func Pull(ctx context.Context, opt PullOption) (*PullResult, error) {
 func PullPages(ctx context.Context, opt PullOption, handle func(*PullPage) error) (pairID string, err error) {
 	if handle == nil {
 		return "", errors.New("pull page handler is nil")
+	}
+	if isPublicNoteSourceURL(opt.URL) {
+		return PullPublicNotePages(ctx, opt, handle)
 	}
 	session, err := OpenSession(ctx, opt.URL)
 	if err != nil {
@@ -251,7 +258,15 @@ func saveResolvedToken(ctx context.Context, key, token string) {
 }
 
 func NewClient(ctx context.Context) (*Client, error) {
-	pub, err := getPublicKey(ctx)
+	return NewClientWithBase(ctx, apiBaseURL)
+}
+
+func NewClientWithBase(ctx context.Context, apiBase string) (*Client, error) {
+	apiBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
+	if apiBase == "" {
+		apiBase = apiBaseURL
+	}
+	pub, err := getPublicKey(ctx, apiBase)
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +293,11 @@ func NewClient(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		secret: secret,
-		iv:     iv,
-		pubKey: base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()),
-		priv:   wallet,
+		apiBase: apiBase,
+		secret:  secret,
+		iv:      iv,
+		pubKey:  base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()),
+		priv:    wallet,
 	}, nil
 }
 
@@ -453,8 +469,8 @@ func fallbackPageLimits(pageLimit int) []int {
 	return limits
 }
 
-func getPublicKey(ctx context.Context) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, apiBaseURL+"/v1.Setting/GetPublicKey", strings.NewReader("{}"))
+func getPublicKey(ctx context.Context, apiBase string) (string, error) {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(apiBase, "/")+"/v1.Setting/GetPublicKey", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -556,7 +572,11 @@ func (c *Client) newSignedRequest(ctx context.Context, apiPath string, payload a
 	if err != nil {
 		return nil, "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBaseURL+apiPath, strings.NewReader(encBody))
+	apiBase := strings.TrimRight(c.apiBase, "/")
+	if apiBase == "" {
+		apiBase = apiBaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+apiPath, strings.NewReader(encBody))
 	if err != nil {
 		return nil, "", err
 	}
