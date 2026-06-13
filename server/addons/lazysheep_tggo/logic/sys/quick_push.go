@@ -33,6 +33,8 @@ import (
 
 const (
 	quickMediaGroupLimit          = 10
+	quickMergeImageLimit          = 8
+	quickMergeVideoLimit          = 2
 	quickMediaMaxBytes            = 48 << 20
 	quickMediaDownloadConcurrency = 8
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
@@ -157,38 +159,67 @@ func selectQuickMediaItemsForPush(items []noteItem, settings map[string]any) ([]
 		return items, false
 	}
 	media := make([]noteItem, 0, len(items))
-	images := make([]noteItem, 0, quickMediaGroupLimit-1)
-	var firstVideo *noteItem
+	images := make([]noteItem, 0, quickMergeImageLimit)
+	verifyVideos := make([]noteItem, 0, quickMergeVideoLimit)
+	normalVideos := make([]noteItem, 0, quickMergeVideoLimit)
 	for _, item := range items {
 		if item.Type != noteTypeImage && item.Type != noteTypeVideo {
 			continue
 		}
 		media = append(media, item)
-		if item.Type == noteTypeImage && !item.VerifyVideo && len(images) < quickMediaGroupLimit-1 {
-			images = append(images, item)
-		}
-		if item.Type == noteTypeVideo && firstVideo == nil {
+		switch item.Type {
+		case noteTypeImage:
+			if !item.VerifyVideo && len(images) < quickMergeImageLimit {
+				images = append(images, item)
+			}
+		case noteTypeVideo:
 			copyItem := item
 			copyItem.VerifyVideo = true
-			firstVideo = &copyItem
+			if item.VerifyVideo && len(verifyVideos) < quickMergeVideoLimit {
+				verifyVideos = append(verifyVideos, copyItem)
+				continue
+			}
+			if !item.VerifyVideo && len(normalVideos) < quickMergeVideoLimit {
+				normalVideos = append(normalVideos, copyItem)
+			}
 		}
 	}
-	if len(media) == 0 || firstVideo == nil {
+	if len(media) == 0 || len(verifyVideos)+len(normalVideos) == 0 {
 		return items, false
 	}
 	if len(media) <= quickMediaGroupLimit {
 		for i := range media {
-			if media[i].Type == noteTypeVideo && media[i].Content == firstVideo.Content {
+			if media[i].Type == noteTypeVideo {
 				media[i].VerifyVideo = true
-				break
 			}
 		}
 		return media, true
 	}
 	selected := make([]noteItem, 0, quickMediaGroupLimit)
 	selected = append(selected, images...)
-	selected = append(selected, *firstVideo)
+	for _, item := range verifyVideos {
+		if len(selected) >= quickMediaGroupLimit || selectedVideoCount(selected) >= quickMergeVideoLimit {
+			break
+		}
+		selected = append(selected, item)
+	}
+	for _, item := range normalVideos {
+		if len(selected) >= quickMediaGroupLimit || selectedVideoCount(selected) >= quickMergeVideoLimit {
+			break
+		}
+		selected = append(selected, item)
+	}
 	return selected, true
+}
+
+func selectedVideoCount(items []noteItem) int {
+	count := 0
+	for _, item := range items {
+		if item.Type == noteTypeVideo {
+			count++
+		}
+	}
+	return count
 }
 
 func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaAsset, error) {
