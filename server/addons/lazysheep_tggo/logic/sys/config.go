@@ -243,7 +243,7 @@ func (s *sLazySheepTGGo) BindSource(ctx context.Context, in *lsysin.BindSourceIn
 		if len(existing.PluginState) > 0 {
 			pluginState = existing.PluginState
 		}
-		if strings.TrimSpace(existing.SourceURL) == sourceURL {
+		if existing.Key == key && strings.TrimSpace(existing.SourceURL) == sourceURL {
 			lastPullID = existing.LastPullID
 			lastCursor = existing.LastCursor
 		}
@@ -769,6 +769,17 @@ func (s *sLazySheepTGGo) findBinding(ctx context.Context, botKey, sourceURL stri
 	state, err := s.GetState(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if chatID != 0 {
+		expectedKey := fmt.Sprintf("%s:%d", botKey, chatID)
+		for _, v := range state.Bindings {
+			if v == nil || v.BotKey != botKey {
+				continue
+			}
+			if v.Key == expectedKey {
+				return v, nil
+			}
+		}
 	}
 	for _, v := range state.Bindings {
 		if v == nil {

@@ -414,8 +414,43 @@ func (s *sLazySheepTGGo) upsertBinding(ctx context.Context, key string, item *mo
 	} else {
 		row[cols.CreatedAt] = gtime.Now()
 	}
-	_, err = upsertByKey(ctx, dao.AddonLazysheepTggoBinding.Ctx(ctx), cols.BindingKey, key, row)
-	return err
+	if _, err = upsertByKey(ctx, dao.AddonLazysheepTggoBinding.Ctx(ctx), cols.BindingKey, key, row); err != nil {
+		return err
+	}
+	if item.ReviewChatID != 0 || item.PublishChatID != 0 {
+		chatIDs := make(map[int64]struct{}, 2)
+		if item.ReviewChatID != 0 {
+			chatIDs[item.ReviewChatID] = struct{}{}
+		}
+		if item.PublishChatID != 0 && item.PublishChatID != item.ReviewChatID {
+			chatIDs[item.PublishChatID] = struct{}{}
+		}
+		for chatID := range chatIDs {
+			data := g.Map{
+				cols.Status:    2,
+				cols.UpdatedAt: gtime.Now(),
+			}
+			if _, err = dao.AddonLazysheepTggoBinding.Ctx(ctx).
+				Where(cols.BotKey, item.BotKey).
+				WhereNot(cols.BindingKey, key).
+				Where(cols.Status, 1).
+				Where(cols.ReviewChatId, chatID).
+				Data(data).
+				Update(); err != nil {
+				return gerror.Wrap(err, "清理频道审核旧绑定失败")
+			}
+			if _, err = dao.AddonLazysheepTggoBinding.Ctx(ctx).
+				Where(cols.BotKey, item.BotKey).
+				WhereNot(cols.BindingKey, key).
+				Where(cols.Status, 1).
+				Where(cols.PublishChatId, chatID).
+				Data(data).
+				Update(); err != nil {
+				return gerror.Wrap(err, "清理频道发布旧绑定失败")
+			}
+		}
+	}
+	return nil
 }
 
 func encodePluginState(state map[string]any) string {

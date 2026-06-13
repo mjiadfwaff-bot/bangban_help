@@ -94,7 +94,7 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 		return nil, err
 	}
 	contentID := parseInt(msg.ContentId)
-	code, err := s.genBotNoteCode(ctx, botID, contentID, msg.Id)
+	code, err := s.genBindingNoteCode(ctx, botID, bindingID, contentID, msg.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -169,16 +169,16 @@ func (s *sLazySheepTGGo) upsertNoteRow(ctx context.Context, row *noteStoreRow) (
 		cols.WorkflowStatus: 1,
 		cols.Status:         1,
 	}
-	return upsertNoteByBotContent(ctx, row.BotID, row.ContentID, data)
+	return upsertNoteByBindingContent(ctx, row.BindingID, row.ContentID, data)
 }
 
-func upsertNoteByBotContent(ctx context.Context, botID int, contentID int64, row g.Map) (int64, error) {
+func upsertNoteByBindingContent(ctx context.Context, bindingID int, contentID int64, row g.Map) (int64, error) {
 	cols := dao.AddonLazysheepTggoNote.Columns()
 	mod := dao.AddonLazysheepTggoNote.Ctx(ctx)
 	existing, err := mod.Clone().
 		Unscoped().
 		Fields(cols.Id).
-		Where(cols.BotId, botID).
+		Where(cols.BindingId, bindingID).
 		Where(cols.ContentId, contentID).
 		Value()
 	if err != nil {
@@ -198,7 +198,7 @@ func upsertNoteByBotContent(ctx context.Context, botID int, contentID int64, row
 	existing, lookupErr := mod.Clone().
 		Unscoped().
 		Fields(cols.Id).
-		Where(cols.BotId, botID).
+		Where(cols.BindingId, bindingID).
 		Where(cols.ContentId, contentID).
 		Value()
 	if lookupErr == nil && !existing.IsNil() {
@@ -386,12 +386,12 @@ func genNoteCode(contentID int64, fallback string) string {
 	return fmt.Sprintf("%s%07d", string(letters), raw%10000000)
 }
 
-func (s *sLazySheepTGGo) genBotNoteCode(ctx context.Context, botID int, contentID int64, fallback string) (string, error) {
+func (s *sLazySheepTGGo) genBindingNoteCode(ctx context.Context, botID int, bindingID int, contentID int64, fallback string) (string, error) {
 	cols := dao.AddonLazysheepTggoNote.Columns()
 	existing, err := dao.AddonLazysheepTggoNote.Ctx(ctx).
 		Unscoped().
 		Fields(cols.Code).
-		Where(cols.BotId, botID).
+		Where(cols.BindingId, bindingID).
 		Where(cols.ContentId, contentID).
 		Value()
 	if err != nil {
@@ -407,6 +407,7 @@ func (s *sLazySheepTGGo) genBotNoteCode(ctx context.Context, botID int, contentI
 			Unscoped().
 			Fields(cols.Id).
 			Where(cols.BotId, botID).
+			Where(cols.BindingId, bindingID).
 			Where(cols.Code, code).
 			Value()
 		if err != nil {

@@ -198,14 +198,20 @@ func (c *Client) ListPublicNotes(ctx context.Context, code string) ([]PublicNote
 }
 
 func publicNoteToMessage(code string, item PublicNoteItem) (json.RawMessage, error) {
+	now := time.Now().Unix()
+	upID := rawJSONInt64(item.UpID, fallbackPublicNoteID(code, item.ID, "up"))
+	createTime := rawJSONInt64(item.CreateTime, now)
+	updateTime := rawJSONInt64(item.UpdateTime, createTime)
+	topTime := rawJSONInt64(item.TopTime, updateTime)
+	items := normalizePublicNoteItems(item.Items)
 	noteContent := map[string]any{
-		"upId":       rawJSONValue(item.UpID, fallbackPublicNoteID(code, item.ID, "up")),
-		"items":      item.Items,
-		"createTime": rawJSONValue(item.CreateTime, time.Now().Unix()),
-		"updateTime": rawJSONValue(item.UpdateTime, time.Now().Unix()),
-		"topTime":    rawJSONValue(item.TopTime, rawJSONValue(item.UpdateTime, time.Now().Unix())),
-		"deleteTime": rawJSONValue(item.DeleteTime, 0),
-		"sort":       rawJSONValue(item.Sort, rawJSONValue(item.UpdateTime, time.Now().Unix())),
+		"upId":       upID,
+		"items":      items,
+		"createTime": createTime,
+		"updateTime": updateTime,
+		"topTime":    topTime,
+		"deleteTime": rawJSONInt64(item.DeleteTime, 0),
+		"sort":       rawJSONInt64(item.Sort, updateTime),
 		"tags":       item.Tags,
 		"offShelf":   item.OffShelf,
 	}
@@ -232,8 +238,8 @@ func publicNoteToMessage(code string, item PublicNoteItem) (json.RawMessage, err
 		"sender":         item.Sender,
 		"senderDno":      item.SenderDno,
 		"senderUser":     rawJSONValue(item.SenderUser, map[string]any{}),
-		"upId":           rawJSONText(item.UpID),
-		"createTime":     fmt.Sprint(rawJSONValue(item.CreateTime, time.Now().Unix())),
+		"upId":           fmt.Sprint(upID),
+		"createTime":     fmt.Sprint(createTime),
 	}
 	if msg["upId"] == "" {
 		msg["upId"] = id
@@ -243,6 +249,131 @@ func publicNoteToMessage(code string, item PublicNoteItem) (json.RawMessage, err
 		return nil, err
 	}
 	return raw, nil
+}
+
+func normalizePublicNoteItems(items []any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			data, err := json.Marshal(item)
+			if err != nil {
+				continue
+			}
+			if err = json.Unmarshal(data, &raw); err != nil {
+				continue
+			}
+		}
+		normalized := make(map[string]any, len(raw))
+		for k, v := range raw {
+			normalized[k] = v
+		}
+		normalized["type"] = publicNoteString(raw["type"])
+		normalized["title"] = publicNoteString(raw["title"])
+		normalized["subTitle"] = publicNoteString(raw["subTitle"])
+		normalized["content"] = publicNoteString(raw["content"])
+		normalized["duration"] = publicNoteInt(raw["duration"])
+		normalized["verifyVideo"] = publicNoteBool(raw["verifyVideo"])
+		normalized["aspectRatio"] = publicNoteFloat(raw["aspectRatio"])
+		normalized["tgFileId"] = publicNoteString(raw["tgFileId"])
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func publicNoteString(v any) string {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func publicNoteInt(v any) int {
+	switch value := v.(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		i, _ := value.Int64()
+		return int(i)
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0
+		}
+		if i, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return int(i)
+		}
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return int(f)
+		}
+	}
+	return 0
+}
+
+func publicNoteFloat(v any) float64 {
+	switch value := v.(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		f, _ := value.Float64()
+		return f
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return 0
+		}
+		f, _ := strconv.ParseFloat(value, 64)
+		return f
+	}
+	return 0
+}
+
+func publicNoteBool(v any) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		value = strings.TrimSpace(strings.ToLower(value))
+		return value == "1" || value == "true" || value == "yes"
+	case int:
+		return value != 0
+	case int64:
+		return value != 0
+	case float64:
+		return value != 0
+	case json.Number:
+		i, _ := value.Int64()
+		return i != 0
+	}
+	return false
+}
+
+func rawJSONInt64(raw json.RawMessage, fallback int64) int64 {
+	text := rawJSONText(raw)
+	if text == "" || text == "null" {
+		return fallback
+	}
+	if v, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return v
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return int64(f)
+	}
+	return fallback
 }
 
 func rawJSONValue(raw json.RawMessage, fallback any) any {
