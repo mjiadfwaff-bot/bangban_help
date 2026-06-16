@@ -79,29 +79,38 @@ func (h *bindingQuickConfigCommand) Handle(ctx context.Context, b *bot.Bot, upda
 	botKey := currentBotKey(ctx)
 	cfg := state.Bots[botKey]
 	if cfg == nil || cfg.MemberId == 0 || cfg.MemberId != userID {
-		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+		sent, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
 			Text:   "只有机器人创建者可以修改绑定配置。",
 		})
-		return err
+		if sendErr == nil && sent != nil {
+			deleteMessageLater(b, msg.Chat.ID, sent.ID)
+		}
+		return sendErr
 	}
 	binding := findBindingByChat(state, botKey, msg.Chat.ID)
 	if binding == nil {
-		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+		sent, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: msg.Chat.ID,
 			Text:   "当前会话还没有绑定配置。",
 		})
-		return err
+		if sendErr == nil && sent != nil {
+			deleteMessageLater(b, msg.Chat.ID, sent.ID)
+		}
+		return sendErr
 	}
 	text := applyBindingQuickConfig(action, binding)
 	if err = service.SysLazysheepTggo().SaveState(ctx, state); err != nil {
 		return err
 	}
-	_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      msg.Chat.ID,
 		Text:        text + "\n\n" + buildBindingQuickConfigSummary(state, binding),
 		ReplyMarkup: buildBindingQuickConfigKeyboard(),
 	})
+	if err == nil && sent != nil {
+		deleteMessageLater(b, msg.Chat.ID, sent.ID)
+	}
 	return err
 }
 
@@ -258,20 +267,26 @@ func sendBindingConfigPanel(ctx context.Context, b *bot.Bot, botKey string, chat
 		return nil
 	}
 	text := buildBindingConfigTextWithState(state, binding)
-	_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
 		ReplyMarkup: keyboard,
 	})
+	if err == nil && sent != nil {
+		deleteMessageLater(b, chatID, sent.ID)
+	}
 	return err
 }
 
 func sendBindingQuickConfigKeyboard(ctx context.Context, b *bot.Bot, chatID int64) error {
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "快捷配置已打开。点击底部按钮即可修改，只有机器人创建者可以操作。",
 		ReplyMarkup: buildBindingQuickConfigKeyboard(),
 	})
+	if err == nil && sent != nil {
+		deleteMessageLater(b, chatID, sent.ID)
+	}
 	return err
 }
 
@@ -368,13 +383,16 @@ func openBindingPluginSettingsPanel(ctx context.Context, b *bot.Bot, update *mod
 	if keyboard == nil {
 		return replyCallback(ctx, b, update, "暂无插件配置项。")
 	}
-	_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        buildBindingPluginSettingsText(binding),
 		ReplyMarkup: keyboard,
 	})
 	if err != nil {
 		return err
+	}
+	if sent != nil {
+		deleteMessageLater(b, chatID, sent.ID)
 	}
 	return replyCallback(ctx, b, update, "已打开配置设置。")
 }

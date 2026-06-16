@@ -28,6 +28,7 @@ func init() {
 	RegisterMessageHandler(&bindPublishCommand{})
 	RegisterMessageHandler(&bindCommand{})
 	RegisterMessageHandler(&pullCommand{})
+	RegisterMessageHandler(&settingsCommand{})
 	RegisterMessageHandler(&syncCommand{})
 	RegisterMessageHandler(&pauseCommand{})
 	RegisterMessageHandler(&resetCommand{})
@@ -211,6 +212,7 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	botKey := currentBotKey(ctx)
 	if msg.From != nil {
 		_ = service.SysLazysheepTggo().TouchUser(ctx, &sysin.TouchUserInp{
@@ -225,18 +227,10 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 	}
 	args := bindCommandArgs(msg.Text, commands...)
 	if args == "" {
-		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: msg.Chat.ID,
-			Text:   fmt.Sprintf("请发送 %s <BangChat链接>", commands[0]),
-		})
-		return err
+		return sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("请发送 %s <BangChat链接>", commands[0]))
 	}
 	if botKey == "" {
-		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: msg.Chat.ID,
-			Text:   "当前命令上下文缺少 bot 标识，请先检查 webhook 入口。",
-		})
-		return err
+		return sendPlainText(ctx, b, msg.Chat.ID, "当前命令上下文缺少 bot 标识，请先检查 webhook 入口。")
 	}
 	sourceURL := firstField(args)
 	operatorID := int64(0)
@@ -250,20 +244,18 @@ func handleBindSource(ctx context.Context, b *bot.Bot, update *models.Update, mo
 		Mode:       mode,
 		SourceURL:  sourceURL,
 	}); err != nil {
-		_, sendErr := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: msg.Chat.ID,
-			Text:   fmt.Sprintf("绑定失败：%v", err),
-		})
+		sendErr := sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("绑定失败：%v", err))
 		if sendErr != nil {
 			return sendErr
 		}
 		return err
 	}
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+	sent, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: msg.Chat.ID,
 		Text:   collectorBindText(ctx, sourceURL),
 	})
 	if err == nil {
+		deleteMessageLater(b, msg.Chat.ID, sent.ID)
 		userID := int64(0)
 		if msg.From != nil {
 			userID = msg.From.ID
@@ -330,6 +322,7 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	botKey := currentBotKey(ctx)
 	args := commandArgs(msg.Text, "/pull", "pull", "/拉取", "拉取")
 	if settingsKeyword(args) {
@@ -364,6 +357,9 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 		ChatID: msg.Chat.ID,
 		Text:   pullProgressText(modeText, limit),
 	})
+	if sendProgressErr == nil && progress != nil {
+		deleteMessageLater(b, msg.Chat.ID, progress.ID)
+	}
 
 	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 15*time.Minute)
 	lastProgressText := ""
@@ -397,6 +393,31 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	return nil
 }
 
+type settingsCommand struct{}
+
+func (h *settingsCommand) Key() string              { return "channel_settings" }
+func (h *settingsCommand) Pattern() string          { return "配置" }
+func (h *settingsCommand) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *settingsCommand) Description() string      { return "显示当前频道配置面板" }
+func (h *settingsCommand) Match(update *models.Update) bool {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return false
+	}
+	return settingsKeyword(msg.Text)
+}
+func (h *settingsCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	if !pluginEnabled(ctx, "collector") {
+		return nil
+	}
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return nil
+	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
+	return sendBindingConfigPanel(ctx, b, currentBotKey(ctx), msg.Chat.ID, userIDFromMessage(msg))
+}
+
 type syncCommand struct{}
 
 func (h *syncCommand) Key() string              { return "sync_channel_notes" }
@@ -419,6 +440,7 @@ func (h *syncCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
 		return err
 	} else if !ok {
@@ -429,6 +451,9 @@ func (h *syncCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 		ChatID: msg.Chat.ID,
 		Text:   "正在同步当前频道商品，请稍候...",
 	})
+	if sendProgressErr == nil && progress != nil {
+		deleteMessageLater(b, msg.Chat.ID, progress.ID)
+	}
 	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 15*time.Minute)
 	go func() {
 		defer cancel()
@@ -470,6 +495,7 @@ func (h *pauseCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
 		return err
 	} else if !ok {
@@ -501,6 +527,7 @@ func (h *resetCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
 		return err
 	} else if !ok {
@@ -532,6 +559,7 @@ func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 	if msg == nil {
 		return nil
 	}
+	deleteMessageLater(b, msg.Chat.ID, msg.ID)
 	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
 		return err
 	} else if !ok {
@@ -546,6 +574,9 @@ func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 		ChatID: msg.Chat.ID,
 		Text:   "已开始清空当前频道，完成后会自动重新拉取。",
 	})
+	if sendProgressErr == nil && progress != nil {
+		deleteMessageLater(b, msg.Chat.ID, progress.ID)
+	}
 	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 20*time.Minute)
 	go func() {
 		defer cancel()
@@ -814,7 +845,7 @@ func deleteMessageLater(b *bot.Bot, chatID int64, messageID int) {
 		return
 	}
 	go func() {
-		time.Sleep(3 * time.Minute)
+		time.Sleep(30 * time.Second)
 		_, _ = b.DeleteMessage(context.Background(), &bot.DeleteMessageParams{
 			ChatID:    chatID,
 			MessageID: messageID,
