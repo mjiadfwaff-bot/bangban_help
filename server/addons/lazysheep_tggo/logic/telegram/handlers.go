@@ -28,6 +28,7 @@ func init() {
 	RegisterMessageHandler(&bindPublishCommand{})
 	RegisterMessageHandler(&bindCommand{})
 	RegisterMessageHandler(&pullCommand{})
+	RegisterMessageHandler(&syncCommand{})
 	RegisterMessageHandler(&pauseCommand{})
 	RegisterMessageHandler(&resetCommand{})
 	RegisterMessageHandler(&clearCommand{})
@@ -396,6 +397,57 @@ func (h *pullCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 	return nil
 }
 
+type syncCommand struct{}
+
+func (h *syncCommand) Key() string              { return "sync_channel_notes" }
+func (h *syncCommand) Pattern() string          { return "刷新" }
+func (h *syncCommand) MatchType() bot.MatchType { return bot.MatchTypeExact }
+func (h *syncCommand) Description() string      { return "同步刷新当前频道商品" }
+func (h *syncCommand) Match(update *models.Update) bool {
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	return text == "刷新" || text == "/刷新" || text == "同步" || text == "/同步" || strings.EqualFold(text, "sync")
+}
+func (h *syncCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
+	if !pluginEnabled(ctx, "collector") {
+		return nil
+	}
+	msg := messageFromUpdate(update)
+	if msg == nil {
+		return nil
+	}
+	if ok, err := ensureBotCreatorForChat(ctx, currentBotKey(ctx), msg); err != nil {
+		return err
+	} else if !ok {
+		return sendPlainText(ctx, b, msg.Chat.ID, "只有机器人创建者可以同步刷新当前频道。")
+	}
+	botKey := currentBotKey(ctx)
+	progress, sendProgressErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: msg.Chat.ID,
+		Text:   "正在同步当前频道商品，请稍候...",
+	})
+	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 15*time.Minute)
+	go func() {
+		defer cancel()
+		result, err := service.SysLazysheepTggo().PullNow(taskCtx, &sysin.PullInp{
+			BotKey: botKey,
+			ChatID: msg.Chat.ID,
+			Retry:  true,
+			Sync:   true,
+		})
+		if err != nil {
+			g.Log().Warningf(taskCtx, "Telegram sync task failed bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, err)
+			deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, fmt.Sprintf("同步失败：%v", err))
+			return
+		}
+		deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, "同步完成：\n"+result)
+	}()
+	return nil
+}
+
 type pauseCommand struct{}
 
 func (h *pauseCommand) Key() string              { return "pause_channel_work" }
@@ -473,7 +525,7 @@ func (h *clearCommand) Match(update *models.Update) bool {
 		return false
 	}
 	text := strings.TrimSpace(msg.Text)
-	return text == "清空" || text == "/清空" || text == "频道清空"
+	return text == "清空" || text == "/清空" || text == "频道清空" || text == "清空并拉取"
 }
 func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Update) error {
 	msg := messageFromUpdate(update)
@@ -486,14 +538,36 @@ func (h *clearCommand) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 		return sendPlainText(ctx, b, msg.Chat.ID, "只有机器人创建者可以清空当前频道笔记。")
 	}
 	text := strings.TrimSpace(msg.Text)
-	if text != "频道清空" {
-		return sendPlainText(ctx, b, msg.Chat.ID, "清空会删除当前频道内所有已入库笔记，并重置采集记录。\n如确认，请发送：频道清空")
+	if text != "频道清空" && text != "清空并拉取" {
+		return sendPlainText(ctx, b, msg.Chat.ID, "清空会删除当前频道已记录的频道消息，清理全部笔记，并重置采集记录。\n如确认，请发送：清空并拉取")
 	}
-	result, err := service.SysLazysheepTggo().ClearBindingNotes(ctx, currentBotKey(ctx), msg.Chat.ID)
-	if err != nil {
-		return sendPlainText(ctx, b, msg.Chat.ID, fmt.Sprintf("清空失败：%v", err))
-	}
-	return sendPlainText(ctx, b, msg.Chat.ID, result)
+	botKey := currentBotKey(ctx)
+	progress, sendProgressErr := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: msg.Chat.ID,
+		Text:   "已开始清空当前频道，完成后会自动重新拉取。",
+	})
+	taskCtx, cancel := context.WithTimeout(WithBotKey(context.Background(), botKey), 20*time.Minute)
+	go func() {
+		defer cancel()
+		result, err := service.SysLazysheepTggo().ClearBindingNotes(taskCtx, botKey, msg.Chat.ID)
+		if err != nil {
+			g.Log().Warningf(taskCtx, "Telegram clear task failed bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, err)
+			deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, fmt.Sprintf("清空失败：%v", err))
+			return
+		}
+		pullResult, pullErr := service.SysLazysheepTggo().PullNow(taskCtx, &sysin.PullInp{
+			BotKey: botKey,
+			ChatID: msg.Chat.ID,
+			Retry:  true,
+		})
+		if pullErr != nil {
+			g.Log().Warningf(taskCtx, "Telegram clear repull failed bot:%s chat:%d err:%+v", botKey, msg.Chat.ID, pullErr)
+			deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, result+"\n\n重新拉取失败："+pullErr.Error())
+			return
+		}
+		deliverPullResult(taskCtx, b, msg.Chat.ID, progress, sendProgressErr, result+"\n\n已重新拉取：\n"+pullResult)
+	}()
+	return nil
 }
 
 func deliverPullResult(ctx context.Context, b *bot.Bot, chatID int64, progress *models.Message, progressErr error, text string) {

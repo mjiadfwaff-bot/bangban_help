@@ -372,6 +372,7 @@ type PullInp struct {
 	Limit     int    `json:"limit"`
 	Auto      bool   `json:"auto"`
 	Retry     bool   `json:"retry"`
+	Sync      bool   `json:"sync"`
 }
 
 type AutoPullTask struct {

@@ -28,23 +28,23 @@ const (
 	legacyCaptionTemplate  = "<b>{title}</b>\n\n{text}\n\n编号：<code>{code}</code>\n\n{verify_link}\n{location_link}\n\n{footer}"
 )
 
-func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, binding *model.BindingRecord, noteID int64, fallbackChatID int64) (int, error) {
+func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, binding *model.BindingRecord, noteID int64, fallbackChatID int64) ([]*models.Message, error) {
 	if binding == nil {
-		return 0, nil
+		return nil, nil
 	}
 	reviewMode := !binding.AutoPush && binding.ReviewChatID != 0
 	targetChatID := pushTargetChatID(binding, fallbackChatID)
 	if targetChatID == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	rt := s.runtime.get(botKey)
 	if rt == nil || rt.client == nil {
-		return 0, gerror.New("机器人运行实例不存在，请先启动机器人")
+		return nil, gerror.New("机器人运行实例不存在，请先启动机器人")
 	}
 	started := time.Now()
 	note, err := s.loadPushNote(ctx, noteID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	plugins := s.collectorPlugins(ctx, botKey)
 	settings := map[string]any{}
@@ -54,10 +54,14 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	settings = withBindingCollectorSettings(settings, plugins, binding.PluginState)
 	caption := buildNoteCaption(note, rt.cfg, binding, settings, plugins)
 	g.Log().Debugf(ctx, "%s 推送采集笔记开始 botKey:%s binding:%s noteId:%d targetChat:%d reviewMode:%t", pullTraceTag(ctx), botKey, binding.Key, noteID, targetChatID, reviewMode)
-	msg, err := s.sendCollectedNoteMainMessage(ctx, rt.client, targetChatID, note, caption, settings)
+	msgs, err := s.sendCollectedNoteMainMessage(ctx, rt.client, targetChatID, note, caption, settings)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	msg := msgs[0]
 	g.Log().Debugf(ctx, "%s 推送采集笔记完成 botKey:%s binding:%s noteId:%d messageID:%d elapsed:%s", pullTraceTag(ctx), botKey, binding.Key, noteID, msg.ID, time.Since(started).Round(time.Millisecond))
 	cols := dao.AddonLazysheepTggoNote.Columns()
 	update := g.Map{cols.UpdatedAt: gtime.Now()}
@@ -67,34 +71,42 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 		update[cols.PublishMessageId] = msg.ID
 	}
 	_, _ = dao.AddonLazysheepTggoNote.Ctx(ctx).WherePri(noteID).Data(update).Update()
-	return msg.ID, nil
+	return msgs, nil
 }
 
-func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, chatID int64, note *pushNote, caption string, settings map[string]any) (*models.Message, error) {
+func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, chatID int64, note *pushNote, caption string, settings map[string]any) ([]*models.Message, error) {
 	items, merged := selectQuickMediaItemsForPush(note.Items, settings)
 	mediaAssets, err := buildQuickMediaAssets(ctx, items)
 	if err != nil {
 		return nil, err
 	}
 	if len(mediaAssets) == 0 {
-		return client.SendMessage(ctx, &bot.SendMessageParams{
+		msg, err := client.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
 			Text:      caption,
 			ParseMode: models.ParseModeHTML,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return []*models.Message{msg}, nil
 	}
 	msgs, err := sendQuickMediaAssetsWithMode(ctx, client, chatID, mediaAssets, caption, merged)
 	if err != nil {
 		return nil, err
 	}
 	if len(msgs) == 0 {
-		return client.SendMessage(ctx, &bot.SendMessageParams{
+		msg, err := client.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:    chatID,
 			Text:      caption,
 			ParseMode: models.ParseModeHTML,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return []*models.Message{msg}, nil
 	}
-	return msgs[0], nil
+	return msgs, nil
 }
 
 type pushNote struct {

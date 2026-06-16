@@ -358,6 +358,7 @@ pullLocked:
 	successLatestCursorID := parseInt(binding.LastCursor)
 	bindingLastCursorID := successLatestCursorID
 	batchSeen := make(map[string]struct{})
+	currentFingerprints := make(map[string]struct{})
 	processed := 0
 	noteProcessed := 0
 	pullLimit := limit
@@ -421,6 +422,7 @@ pullLocked:
 			}
 			fingerprint, sourceURLs := noteFingerprint(note)
 			if fingerprint != "" {
+				currentFingerprints[fingerprint] = struct{}{}
 				if _, ok := batchSeen[fingerprint]; ok {
 					summary.Deduped++
 					continue
@@ -509,6 +511,15 @@ pullLocked:
 	if summary.PairID == "" {
 		summary.PairID = pairID
 	}
+	if in.Sync && limit == 0 && len(currentFingerprints) > 0 {
+		removedNotes, deletedMessages, failedMessages, syncErr := s.deleteBindingNotesNotInFingerprints(ctx, in.BotKey, binding, in.ChatID, currentFingerprints)
+		if syncErr != nil {
+			summary.AddError("差异清理下架内容失败", syncErr)
+			g.Log().Warningf(ctx, "%s 差异清理下架内容失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, syncErr)
+		} else if removedNotes > 0 || deletedMessages > 0 || failedMessages > 0 {
+			timer.Report("差异清理完成：下架 %d 条，删除频道消息 %d 条，失败 %d 条。", removedNotes, deletedMessages, failedMessages)
+		}
+	}
 	g.Log().Debugf(ctx, "%s BangChat 采集完成 botKey:%s binding:%s pair:%s fetched:%d summary:%s", pullTraceTag(ctx), in.BotKey, binding.Key, summary.PairID, summary.Fetched, summary.Message())
 	if successMaxContentID > binding.LastPullID || successLatestCursorID > bindingLastCursorID {
 		if err := s.updateBindingPullState(ctx, binding.Key, successMaxContentID, successLatestCursor); err != nil {
@@ -549,6 +560,10 @@ func (s *sLazySheepTGGo) ClearBindingNotes(ctx context.Context, botKey string, c
 	if binding == nil {
 		return "", gerror.New("当前频道还没有绑定关系")
 	}
+	deletedMessages, failedMessages, deleteErr := s.deleteBindingPushedMessages(ctx, botKey, binding, chatID)
+	if deleteErr != nil {
+		g.Log().Warningf(ctx, "删除频道已推送消息失败 bot:%s binding:%s err:%+v", botKey, binding.Key, deleteErr)
+	}
 	noteCols := dao.AddonLazysheepTggoNote.Columns()
 	itemCols := dao.AddonLazysheepTggoNoteItem.Columns()
 	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
@@ -588,7 +603,13 @@ func (s *sLazySheepTGGo) ClearBindingNotes(ctx context.Context, botKey string, c
 	if err = clearPullDedupScope(ctx, pullDedupScope(botKey, binding, chatID)); err != nil {
 		g.Log().Warningf(ctx, "清理采集去重缓存失败 bot:%s binding:%s err:%+v", botKey, binding.Key, err)
 	}
-	return fmt.Sprintf("当前频道已清空 %d 条笔记，并重置采集记录。", count), nil
+	if err = s.clearPushChannelState(ctx, botKey, binding, chatID); err != nil {
+		g.Log().Warningf(ctx, "清理频道推送状态失败 bot:%s binding:%s err:%+v", botKey, binding.Key, err)
+	}
+	if failedMessages > 0 {
+		return fmt.Sprintf("当前频道已清空 %d 条笔记，删除频道消息 %d 条，%d 条消息删除失败，并重置采集记录。", count, deletedMessages, failedMessages), nil
+	}
+	return fmt.Sprintf("当前频道已清空 %d 条笔记，删除频道消息 %d 条，并重置采集记录。", count, deletedMessages), nil
 }
 
 func retryPullAction(ctx context.Context, label string, action func() error) error {

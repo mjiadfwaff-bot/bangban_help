@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-telegram/bot"
+	botmodels "github.com/go-telegram/bot/models"
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -704,6 +705,59 @@ func recordPushTaskLog(ctx context.Context, task *lsysin.PushNoteTask, status in
 	}
 }
 
+func (s *sLazySheepTGGo) recordPushedMessages(ctx context.Context, task *lsysin.PushNoteTask, messages []*botmodels.Message) error {
+	if task == nil || len(messages) == 0 {
+		return nil
+	}
+	if err := s.ensurePushMessageTable(ctx); err != nil {
+		return err
+	}
+	now := gtime.Now()
+	for _, msg := range messages {
+		if msg == nil || msg.ID == 0 {
+			continue
+		}
+		data := g.Map{
+			"task_id":        task.TaskID,
+			"bot_key":        task.BotKey,
+			"binding_key":    task.BindingKey,
+			"note_id":        task.NoteID,
+			"content_id":     task.ContentID,
+			"chat_id":        task.ChatID,
+			"message_id":     msg.ID,
+			"media_group_id": strings.TrimSpace(msg.MediaGroupID),
+			"status":         1,
+			"created_at":     now,
+			"updated_at":     now,
+		}
+		if _, err := g.DB().Model("hg_addon_lazysheep_tggo_push_message").Data(data).Insert(); err != nil {
+			if isDuplicateKeyError(err) {
+				_, updateErr := g.DB().Model("hg_addon_lazysheep_tggo_push_message").
+					Where("bot_key", task.BotKey).
+					Where("chat_id", task.ChatID).
+					Where("message_id", msg.ID).
+					Data(g.Map{
+						"task_id":        task.TaskID,
+						"binding_key":    task.BindingKey,
+						"note_id":        task.NoteID,
+						"content_id":     task.ContentID,
+						"media_group_id": strings.TrimSpace(msg.MediaGroupID),
+						"status":         1,
+						"deleted_at":     nil,
+						"updated_at":     now,
+					}).
+					Update()
+				if updateErr != nil {
+					return gerror.Wrap(updateErr, "更新已推送消息记录失败")
+				}
+				continue
+			}
+			return gerror.Wrap(err, "写入已推送消息记录失败")
+		}
+	}
+	return nil
+}
+
 func (s *sLazySheepTGGo) clearPushChannelState(ctx context.Context, botKey string, binding *model.BindingRecord, chatID int64) error {
 	targetChatID := pushTargetChatID(binding, chatID)
 	if strings.TrimSpace(botKey) == "" || targetChatID == 0 {
@@ -713,6 +767,9 @@ func (s *sLazySheepTGGo) clearPushChannelState(ctx context.Context, botKey strin
 		return err
 	}
 	if err := s.ensurePushDedupTable(ctx); err != nil {
+		return err
+	}
+	if err := s.ensurePushMessageTable(ctx); err != nil {
 		return err
 	}
 	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_push_log").
@@ -734,6 +791,185 @@ func (s *sLazySheepTGGo) clearPushChannelState(ctx context.Context, botKey strin
 		return gerror.Wrap(err, "清理频道推送队列失败")
 	}
 	return clearPushDedupCache(ctx, botKey, targetChatID)
+}
+
+func (s *sLazySheepTGGo) deleteBindingPushedMessages(ctx context.Context, botKey string, binding *model.BindingRecord, chatID int64) (deleted int, failed int, err error) {
+	targetChatID := pushTargetChatID(binding, chatID)
+	if strings.TrimSpace(botKey) == "" || binding == nil || targetChatID == 0 {
+		return 0, 0, nil
+	}
+	if err = s.ensurePushMessageTable(ctx); err != nil {
+		return 0, 0, err
+	}
+	if err = s.ensurePushBotRuntime(ctx, botKey); err != nil {
+		return 0, 0, err
+	}
+	rt := s.runtime.get(botKey)
+	if rt == nil || rt.client == nil {
+		return 0, 0, gerror.New("机器人运行实例不存在，请先启动机器人")
+	}
+	var rows []struct {
+		Id        int64 `json:"id" orm:"id"`
+		MessageID int   `json:"messageId" orm:"message_id"`
+	}
+	if err = g.DB().Model("hg_addon_lazysheep_tggo_push_message").
+		Fields("id,message_id").
+		Where("bot_key", botKey).
+		Where("binding_key", binding.Key).
+		Where("chat_id", targetChatID).
+		Where("status", 1).
+		OrderDesc("message_id").
+		Scan(&rows); err != nil {
+		return 0, 0, gerror.Wrap(err, "查询频道已推送消息失败")
+	}
+	for _, row := range rows {
+		if row.MessageID == 0 {
+			continue
+		}
+		_, deleteErr := rt.client.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    targetChatID,
+			MessageID: row.MessageID,
+		})
+		now := gtime.Now()
+		if deleteErr != nil {
+			failed++
+			_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_message").WherePri(row.Id).Data(g.Map{
+				"status":     3,
+				"updated_at": now,
+			}).Update()
+			g.Log().Warningf(ctx, "删除频道消息失败 bot:%s chat:%d message:%d err:%+v", botKey, targetChatID, row.MessageID, deleteErr)
+			continue
+		}
+		deleted++
+		_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_message").WherePri(row.Id).Data(g.Map{
+			"status":     2,
+			"deleted_at": now,
+			"updated_at": now,
+		}).Update()
+	}
+	return deleted, failed, nil
+}
+
+func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context, botKey string, binding *model.BindingRecord, chatID int64, keep map[string]struct{}) (removedNotes int, deletedMessages int, failedMessages int, err error) {
+	if binding == nil || len(keep) == 0 {
+		return 0, 0, 0, nil
+	}
+	targetChatID := pushTargetChatID(binding, chatID)
+	if strings.TrimSpace(botKey) == "" || targetChatID == 0 {
+		return 0, 0, 0, nil
+	}
+	bindingID, err := s.resolveBindingID(ctx, binding.Key)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	var rows []struct {
+		Id        int64 `json:"id" orm:"id"`
+		ContentID int64 `json:"contentId" orm:"content_id"`
+	}
+	if err = g.DB().Model("hg_addon_lazysheep_tggo_note").
+		Fields("id,content_id").
+		Where("binding_id", bindingID).
+		Scan(&rows); err != nil {
+		return 0, 0, 0, gerror.Wrap(err, "查询频道笔记失败")
+	}
+	removeNoteIDs := make([]int64, 0)
+	for _, row := range rows {
+		fingerprint, fpErr := s.pushMediaDedupFingerprint(ctx, row.Id)
+		if fpErr != nil {
+			return 0, 0, 0, fpErr
+		}
+		if fingerprint == "" {
+			continue
+		}
+		if _, ok := keep[fingerprint]; ok {
+			continue
+		}
+		removeNoteIDs = append(removeNoteIDs, row.Id)
+	}
+	if len(removeNoteIDs) == 0 {
+		return 0, 0, 0, nil
+	}
+	deletedMessages, failedMessages, err = s.deletePushedMessagesByNoteIDs(ctx, botKey, binding.Key, targetChatID, removeNoteIDs)
+	if err != nil {
+		return 0, deletedMessages, failedMessages, err
+	}
+	if err = s.deleteNoteRows(ctx, removeNoteIDs); err != nil {
+		return 0, deletedMessages, failedMessages, err
+	}
+	return len(removeNoteIDs), deletedMessages, failedMessages, nil
+}
+
+func (s *sLazySheepTGGo) deletePushedMessagesByNoteIDs(ctx context.Context, botKey string, bindingKey string, chatID int64, noteIDs []int64) (deleted int, failed int, err error) {
+	if len(noteIDs) == 0 {
+		return 0, 0, nil
+	}
+	if err = s.ensurePushMessageTable(ctx); err != nil {
+		return 0, 0, err
+	}
+	if err = s.ensurePushBotRuntime(ctx, botKey); err != nil {
+		return 0, 0, err
+	}
+	rt := s.runtime.get(botKey)
+	if rt == nil || rt.client == nil {
+		return 0, 0, gerror.New("机器人运行实例不存在，请先启动机器人")
+	}
+	var rows []struct {
+		Id        int64 `json:"id" orm:"id"`
+		MessageID int   `json:"messageId" orm:"message_id"`
+	}
+	if err = g.DB().Model("hg_addon_lazysheep_tggo_push_message").
+		Fields("id,message_id").
+		Where("bot_key", botKey).
+		Where("binding_key", bindingKey).
+		Where("chat_id", chatID).
+		WhereIn("note_id", noteIDs).
+		Where("status", 1).
+		OrderDesc("message_id").
+		Scan(&rows); err != nil {
+		return 0, 0, gerror.Wrap(err, "查询待删除频道消息失败")
+	}
+	for _, row := range rows {
+		if row.MessageID == 0 {
+			continue
+		}
+		_, deleteErr := rt.client.DeleteMessage(ctx, &bot.DeleteMessageParams{
+			ChatID:    chatID,
+			MessageID: row.MessageID,
+		})
+		now := gtime.Now()
+		if deleteErr != nil {
+			failed++
+			_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_message").WherePri(row.Id).Data(g.Map{
+				"status":     3,
+				"updated_at": now,
+			}).Update()
+			g.Log().Warningf(ctx, "删除下架频道消息失败 bot:%s chat:%d message:%d err:%+v", botKey, chatID, row.MessageID, deleteErr)
+			continue
+		}
+		deleted++
+		_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_message").WherePri(row.Id).Data(g.Map{
+			"status":     2,
+			"deleted_at": now,
+			"updated_at": now,
+		}).Update()
+	}
+	return deleted, failed, nil
+}
+
+func (s *sLazySheepTGGo) deleteNoteRows(ctx context.Context, noteIDs []int64) error {
+	if len(noteIDs) == 0 {
+		return nil
+	}
+	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_note_asset").WhereIn("note_id", noteIDs).Delete(); err != nil {
+		return gerror.Wrap(err, "删除下架笔记资源失败")
+	}
+	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_note_item").WhereIn("note_id", noteIDs).Delete(); err != nil {
+		return gerror.Wrap(err, "删除下架笔记项失败")
+	}
+	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_note").WhereIn("id", noteIDs).Delete(); err != nil {
+		return gerror.Wrap(err, "删除下架笔记失败")
+	}
+	return nil
 }
 
 func clearPushDedupCache(ctx context.Context, botKey string, chatID int64) error {
@@ -891,9 +1127,13 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	} else if !seen {
 		g.Log().Warningf(ctx, "推送前频道去重记录不存在，继续执行但保留任务幂等保护 task:%d bot:%s chat:%d note:%d", task.TaskID, task.BotKey, task.ChatID, task.NoteID)
 	}
-	messageID, pushErr := s.pushCollectedNote(ctx, task.BotKey, binding, task.NoteID, task.ChatID)
+	messages, pushErr := s.pushCollectedNote(ctx, task.BotKey, binding, task.NoteID, task.ChatID)
 	elapsed := time.Since(started)
 	if pushErr == nil {
+		messageID := firstTelegramMessageID(messages)
+		if err := s.recordPushedMessages(ctx, task, messages); err != nil {
+			g.Log().Warningf(ctx, "记录已推送消息失败 task:%d err:%+v", task.TaskID, err)
+		}
 		recordPushChatSuccess(task.BotKey, task.ChatID)
 		_, err = g.DB().Model("hg_addon_lazysheep_tggo_push_queue").WherePri(task.TaskID).Data(g.Map{
 			"status":      pushTaskStatusDone,
@@ -948,6 +1188,15 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	}
 	recordPushQueueMonitorEvent(ctx, task, false, errText, elapsed)
 	return nil
+}
+
+func firstTelegramMessageID(messages []*botmodels.Message) int {
+	for _, msg := range messages {
+		if msg != nil && msg.ID != 0 {
+			return msg.ID
+		}
+	}
+	return 0
 }
 
 func (s *sLazySheepTGGo) pushDedupSeenForTask(ctx context.Context, task *lsysin.PushNoteTask) (bool, error) {

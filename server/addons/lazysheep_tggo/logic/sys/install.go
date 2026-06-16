@@ -57,6 +57,9 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err := s.ensurePushLogTable(ctx); err != nil {
 		return err
 	}
+	if err := s.ensurePushMessageTable(ctx); err != nil {
+		return err
+	}
 	if err := s.ensurePushDedupTable(ctx); err != nil {
 		return err
 	}
@@ -371,6 +374,60 @@ func (s *sLazySheepTGGo) ensurePushLogTable(ctx context.Context) error {
 			"KEY `chat_time` (`bot_key`,`chat_id`,`created_at`),"+
 			"KEY `task_id` (`task_id`),"+
 			"KEY `note_id` (`note_id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG采集推送日志'")
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *sLazySheepTGGo) ensurePushMessageTable(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_push_message"); err != nil || ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err := g.DB().Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS hg_addon_lazysheep_tggo_push_message (
+				id BIGSERIAL PRIMARY KEY,
+				task_id BIGINT NOT NULL DEFAULT 0,
+				bot_key VARCHAR(64) NOT NULL DEFAULT '',
+				binding_key VARCHAR(255) NOT NULL DEFAULT '',
+				note_id BIGINT NOT NULL DEFAULT 0,
+				content_id BIGINT NOT NULL DEFAULT 0,
+				chat_id BIGINT NOT NULL DEFAULT 0,
+				message_id BIGINT NOT NULL DEFAULT 0,
+				media_group_id VARCHAR(128) NOT NULL DEFAULT '',
+				status INT NOT NULL DEFAULT 1,
+				deleted_at TIMESTAMP NULL,
+				created_at TIMESTAMP NULL,
+				updated_at TIMESTAMP NULL
+			)
+		`)
+		if err != nil {
+			return err
+		}
+		_, _ = g.DB().Exec(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_message_scope_msg ON hg_addon_lazysheep_tggo_push_message (bot_key, chat_id, message_id)")
+		_, _ = g.DB().Exec(ctx, "CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_push_message_binding ON hg_addon_lazysheep_tggo_push_message (bot_key, binding_key, status)")
+		return nil
+	case consts.DBMysql, "":
+		_, err := g.DB().Exec(ctx, "CREATE TABLE IF NOT EXISTS `hg_addon_lazysheep_tggo_push_message` ("+
+			"`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"+
+			"`task_id` BIGINT NOT NULL DEFAULT 0 COMMENT '任务ID',"+
+			"`bot_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '机器人标识',"+
+			"`binding_key` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '绑定标识',"+
+			"`note_id` BIGINT NOT NULL DEFAULT 0 COMMENT '笔记ID',"+
+			"`content_id` BIGINT NOT NULL DEFAULT 0 COMMENT '内容ID',"+
+			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '频道ID',"+
+			"`message_id` BIGINT NOT NULL DEFAULT 0 COMMENT 'TG消息ID',"+
+			"`media_group_id` VARCHAR(128) NOT NULL DEFAULT '' COMMENT 'TG媒体组ID',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1已发送 2已删除 3删除失败',"+
+			"`deleted_at` DATETIME DEFAULT NULL COMMENT '删除时间',"+
+			"`created_at` DATETIME DEFAULT NULL,`updated_at` DATETIME DEFAULT NULL,"+
+			"PRIMARY KEY (`id`),"+
+			"UNIQUE KEY `scope_msg` (`bot_key`,`chat_id`,`message_id`),"+
+			"KEY `binding_status` (`bot_key`,`binding_key`,`status`),"+
+			"KEY `note_id` (`note_id`),"+
+			"KEY `chat_id` (`chat_id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='TG采集已发送消息'")
 		return err
 	default:
 		return nil
