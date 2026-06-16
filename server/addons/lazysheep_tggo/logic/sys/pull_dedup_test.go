@@ -206,7 +206,7 @@ func TestSplitQuickMediaAssetsSplitsByUploadSize(t *testing.T) {
 		{Type: noteTypeImage, SourceURL: "https://img.example/1.jpg", Data: make([]byte, quickMediaGroupMaxUploadBytes/2+1)},
 		{Type: noteTypeImage, SourceURL: "https://img.example/2.jpg", Data: make([]byte, quickMediaGroupMaxUploadBytes/2+1)},
 	}
-	parts := splitQuickMediaAssetsWithMode(assets, true)
+	parts := splitQuickMediaAssetsWithMode(assets, false)
 	if len(parts) != 2 {
 		t.Fatalf("expected media to split by upload size, got %d groups", len(parts))
 	}
@@ -221,12 +221,26 @@ func TestSplitQuickMediaAssetsSendsDocumentAlone(t *testing.T) {
 		{Type: quickMediaTypeDocument, SourceURL: "https://img.example/big.jpg", Data: make([]byte, quickPhotoMaxBytes+1)},
 		{Type: noteTypeImage, SourceURL: "https://img.example/2.jpg", Data: make([]byte, 8)},
 	}
-	parts := splitQuickMediaAssetsWithMode(assets, true)
+	parts := splitQuickMediaAssetsWithMode(assets, false)
 	if len(parts) != 3 {
 		t.Fatalf("expected document to be isolated, got %d groups", len(parts))
 	}
 	if parts[1][0].Type != quickMediaTypeDocument {
 		t.Fatalf("expected middle group to be document, got %#v", parts[1][0])
+	}
+}
+
+func TestSplitQuickMediaAssetsMergeModeForcesSingleGroup(t *testing.T) {
+	assets := []quickMediaAsset{
+		{Type: noteTypeImage, SourceURL: "https://img.example/1.jpg", Data: make([]byte, quickMediaGroupMaxUploadBytes)},
+		{Type: noteTypeVideo, SourceURL: "https://img.example/verify.mp4", Data: make([]byte, quickMediaGroupMaxUploadBytes), VerifyVideo: true},
+	}
+	parts := splitQuickMediaAssetsWithMode(assets, true)
+	if len(parts) != 1 {
+		t.Fatalf("expected merge mode to force a single group, got %d", len(parts))
+	}
+	if len(parts[0]) != 2 {
+		t.Fatalf("expected both media in forced group, got %d", len(parts[0]))
 	}
 }
 
@@ -250,5 +264,30 @@ func TestCompressQuickPhotoForTelegram(t *testing.T) {
 	}
 	if len(data) > quickPhotoMaxBytes {
 		t.Fatalf("compressed photo is too large: %d", len(data))
+	}
+}
+
+func TestMediaPHashFromBytesIsStable(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x * 4), G: uint8(y * 4), B: 128, A: 255})
+		}
+	}
+	var first bytes.Buffer
+	if err := jpeg.Encode(&first, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	var second bytes.Buffer
+	if err := jpeg.Encode(&second, img, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	firstHash := mediaPHashFromBytes(first.Bytes())
+	secondHash := mediaPHashFromBytes(second.Bytes())
+	if firstHash == "" || secondHash == "" {
+		t.Fatalf("expected non-empty hashes: %q %q", firstHash, secondHash)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("expected stable perceptual hash, got %s and %s", firstHash, secondHash)
 	}
 }

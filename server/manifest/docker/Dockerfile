@@ -5,6 +5,7 @@ FROM loads/alpine:3.8
 ###############################################################################
 
 ENV WORKDIR                 /app
+RUN apk add --no-cache ffmpeg
 ADD hack                $WORKDIR/hack/
 ADD manifest/config                $WORKDIR/manifest/config/
 ADD resource                $WORKDIR/resource/

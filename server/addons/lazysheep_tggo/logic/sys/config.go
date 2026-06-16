@@ -359,6 +359,7 @@ pullLocked:
 	bindingLastCursorID := successLatestCursorID
 	batchSeen := make(map[string]struct{})
 	currentFingerprints := make(map[string]struct{})
+	currentPushFingerprints := make(map[string]struct{})
 	processed := 0
 	noteProcessed := 0
 	pullLimit := limit
@@ -427,14 +428,16 @@ pullLocked:
 					summary.Deduped++
 					continue
 				}
-				seen, seenErr := pullDedupSeen(ctx, dedupScope, fingerprint)
-				if seenErr != nil {
-					return seenErr
-				}
-				if seen {
-					summary.Deduped++
-					timer.Report("当前频道发现重复笔记，已跳过。")
-					continue
+				if !in.Sync {
+					seen, seenErr := pullDedupSeen(ctx, dedupScope, fingerprint)
+					if seenErr != nil {
+						return seenErr
+					}
+					if seen {
+						summary.Deduped++
+						timer.Report("当前频道发现重复笔记，已跳过。")
+						continue
+					}
 				}
 			}
 			var stored *lsysin.NoteStoreModel
@@ -461,10 +464,19 @@ pullLocked:
 				summary.AddError(fmt.Sprintf("保存失败 contentID:%s", msg.ContentId), gerror.New("笔记保存结果为空"))
 				continue
 			}
+			if in.Sync {
+				if pushFingerprints, fpErr := s.pushMediaDedupFingerprints(ctx, stored.NoteId); fpErr != nil {
+					g.Log().Warningf(ctx, "计算同步推送指纹失败 botKey:%s binding:%s note:%d err:%+v", in.BotKey, binding.Key, stored.NoteId, fpErr)
+				} else {
+					for _, pushFingerprint := range pushFingerprints {
+						currentPushFingerprints[pushFingerprint] = struct{}{}
+					}
+				}
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			_, queued, pushErr := s.enqueuePushNote(ctx, in.BotKey, binding, stored.NoteId, contentID, in.ChatID)
+			task, queued, pushErr := s.enqueuePushNote(ctx, in.BotKey, binding, stored.NoteId, contentID, in.ChatID)
 			if pushErr != nil {
 				summary.PushFailed++
 				summary.AddError(fmt.Sprintf("推送入队失败 contentID:%s", msg.ContentId), pushErr)
@@ -475,6 +487,11 @@ pullLocked:
 				summary.PushQueued++
 			} else {
 				summary.Skipped++
+				if in.Sync && task != nil && task.TaskID == 0 && stored.NoteId > 0 {
+					if err := s.deleteNoteRows(ctx, []int64{stored.NoteId}); err != nil {
+						g.Log().Warningf(ctx, "清理同步重复笔记失败 botKey:%s binding:%s note:%d err:%+v", in.BotKey, binding.Key, stored.NoteId, err)
+					}
+				}
 			}
 			if cursorID > 0 && cursorID > successLatestCursorID {
 				successLatestCursorID = cursorID
@@ -512,7 +529,7 @@ pullLocked:
 		summary.PairID = pairID
 	}
 	if in.Sync && limit == 0 && len(currentFingerprints) > 0 {
-		removedNotes, deletedMessages, failedMessages, syncErr := s.deleteBindingNotesNotInFingerprints(ctx, in.BotKey, binding, in.ChatID, currentFingerprints)
+		removedNotes, deletedMessages, failedMessages, syncErr := s.deleteBindingNotesNotInFingerprints(ctx, in.BotKey, binding, in.ChatID, currentFingerprints, currentPushFingerprints)
 		if syncErr != nil {
 			summary.AddError("差异清理下架内容失败", syncErr)
 			g.Log().Warningf(ctx, "%s 差异清理下架内容失败 botKey:%s binding:%s err:%+v", pullTraceTag(ctx), in.BotKey, binding.Key, syncErr)

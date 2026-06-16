@@ -45,6 +45,9 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err := s.ensureNoteTables(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureNoteAssetPHashField(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureWebhookLogTable(ctx); err != nil {
 		return err
 	}
@@ -80,7 +83,7 @@ func (s *sLazySheepTGGo) ensureTables(ctx context.Context) error {
 	if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
 		return gerror.Wrap(err, "初始化懒羊羊TGGo数据表失败")
 	}
-	return nil
+	return s.ensureNoteAssetPHashField(ctx)
 }
 
 func (s *sLazySheepTGGo) ensureBotRoleField(ctx context.Context) error {
@@ -225,6 +228,40 @@ func (s *sLazySheepTGGo) ensureWebhookLogTable(ctx context.Context) error {
 	default:
 		return nil
 	}
+}
+
+func (s *sLazySheepTGGo) ensureNoteAssetPHashField(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_note_asset"); err != nil || !ok {
+		return err
+	}
+	hasField, err := tableHasField(ctx, "hg_addon_lazysheep_tggo_note_asset", "media_phash")
+	if err != nil {
+		return gerror.Wrap(err, "检查笔记资源感知哈希字段失败")
+	}
+	if hasField {
+		return nil
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		_, err = g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_note_asset ADD COLUMN IF NOT EXISTS media_phash varchar(32) DEFAULT ''")
+		if err == nil {
+			_, _ = g.DB().Exec(ctx, "CREATE INDEX IF NOT EXISTS hg_addon_lazysheep_tggo_note_asset_media_phash ON hg_addon_lazysheep_tggo_note_asset (media_phash)")
+		}
+	case consts.DBMysql, "":
+		_, err = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note_asset` ADD COLUMN `media_phash` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '图片感知哈希' AFTER `source_url`")
+		if err == nil {
+			_, _ = g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note_asset` ADD KEY `media_phash` (`media_phash`)")
+		}
+	default:
+		return nil
+	}
+	if err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
+		return gerror.Wrap(err, "更新笔记资源感知哈希字段失败")
+	}
+	return nil
 }
 
 func (s *sLazySheepTGGo) ensureChatMapTable(ctx context.Context) error {

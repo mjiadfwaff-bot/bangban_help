@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -410,18 +411,18 @@ func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, bin
 		recordPushTaskLog(ctx, pushTaskFromRecord(existing), pushLogStatusSkipped, existing.Attempts, 0, 0, "推送任务已存在，跳过重复入队")
 		return pushTaskFromRecord(existing), false, nil
 	}
-	fingerprint, err := s.pushDedupFingerprint(ctx, contentID, noteID)
+	fingerprints, err := s.pushDedupFingerprints(ctx, contentID, noteID)
 	if err != nil {
 		return nil, false, err
 	}
-	if seen, err := s.pushDedupSeen(ctx, botKey, binding.Key, targetChatID, fingerprint); err != nil {
+	if seen, err := s.pushDedupSeenAny(ctx, botKey, binding.Key, targetChatID, fingerprints); err != nil {
 		return nil, false, err
 	} else if seen {
 		task := &lsysin.PushNoteTask{BotKey: botKey, BindingKey: binding.Key, SourceURL: binding.SourceURL, NoteID: noteID, ContentID: contentID, ChatID: targetChatID}
 		recordPushTaskLog(ctx, task, pushLogStatusSkipped, 0, 0, 0, "频道内重复内容，跳过推送")
 		return task, false, nil
 	}
-	reserved, err := s.pushDedupReserve(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprint)
+	reserved, err := s.pushDedupReserveAny(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprints)
 	if err != nil {
 		return nil, false, err
 	}
@@ -478,7 +479,7 @@ func (s *sLazySheepTGGo) enqueuePushNote(ctx context.Context, botKey string, bin
 		}).Update()
 		g.Log().Warningf(ctx, "推送任务首次投递失败，已转入重试 task:%d err:%+v", taskID, err)
 	}
-	if err = s.pushDedupRemember(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprint, taskID, 1); err != nil {
+	if err = s.pushDedupRememberAny(ctx, botKey, binding.Key, targetChatID, noteID, contentID, fingerprints, taskID, 1); err != nil {
 		g.Log().Warningf(ctx, "记录推送去重失败 task:%d err:%+v", taskID, err)
 	}
 	return task, true, nil
@@ -520,42 +521,106 @@ func pushTargetChatID(binding *model.BindingRecord, fallbackChatID int64) int64 
 }
 
 func (s *sLazySheepTGGo) pushDedupFingerprint(ctx context.Context, contentID int64, noteID int64) (string, error) {
-	if fingerprint, err := s.pushMediaDedupFingerprint(ctx, noteID); err != nil {
+	fingerprints, err := s.pushDedupFingerprints(ctx, contentID, noteID)
+	if err != nil {
 		return "", err
-	} else if fingerprint != "" {
-		return fingerprint, nil
+	}
+	if len(fingerprints) > 0 {
+		return fingerprints[0], nil
 	}
 	return "", nil
 }
 
 func (s *sLazySheepTGGo) pushMediaDedupFingerprint(ctx context.Context, noteID int64) (string, error) {
-	if noteID <= 0 {
+	fingerprints, err := s.pushMediaDedupFingerprints(ctx, noteID)
+	if err != nil {
+		return "", err
+	}
+	if len(fingerprints) == 0 {
 		return "", nil
 	}
+	return fingerprints[0], nil
+}
+
+func (s *sLazySheepTGGo) pushDedupFingerprints(ctx context.Context, contentID int64, noteID int64) ([]string, error) {
+	return s.pushMediaDedupFingerprints(ctx, noteID)
+}
+
+func (s *sLazySheepTGGo) pushMediaDedupFingerprints(ctx context.Context, noteID int64) ([]string, error) {
+	if noteID <= 0 {
+		return nil, nil
+	}
+	if err := s.ensureNoteAssetPHashField(ctx); err != nil {
+		g.Log().Warningf(ctx, "确保笔记资源感知哈希字段失败 err:%+v", err)
+	}
 	var rows []struct {
-		SourceUrl string `json:"sourceUrl" orm:"source_url"`
+		AssetType  string `json:"assetType" orm:"asset_type"`
+		SourceUrl  string `json:"sourceUrl" orm:"source_url"`
+		MediaPHash string `json:"mediaPHash" orm:"media_phash"`
 	}
 	if err := g.DB().Model("hg_addon_lazysheep_tggo_note_asset").
-		Fields("source_url").
+		Fields("asset_type,source_url,media_phash").
 		Where("note_id", noteID).
 		Where("source_url !=", "").
 		WhereNull("deleted_at").
-		OrderAsc("source_url").
+		OrderAsc("sort").
 		Scan(&rows); err != nil {
-		return "", gerror.Wrap(err, "查询笔记媒体去重指纹失败")
+		return nil, gerror.Wrap(err, "查询笔记媒体去重指纹失败")
 	}
+	phashes := make([]string, 0, len(rows))
+	videoURLs := make([]string, 0)
+	imageCount := 0
+	missingImagePHash := false
 	urls := make([]string, 0, len(rows))
 	for _, row := range rows {
+		assetType := strings.TrimSpace(row.AssetType)
+		switch assetType {
+		case "image":
+			imageCount++
+			if phash := strings.TrimSpace(row.MediaPHash); phash != "" {
+				phashes = append(phashes, phash)
+			} else {
+				missingImagePHash = true
+			}
+		case "video", "verify_video":
+			if text := normalizeDedupMediaURL(row.SourceUrl); text != "" {
+				videoURLs = append(videoURLs, text)
+			}
+		}
 		if text := normalizeDedupMediaURL(row.SourceUrl); text != "" {
 			urls = append(urls, text)
 		}
 	}
-	if len(urls) == 0 {
-		return "", nil
+	fingerprints := make([]string, 0, 2)
+	if len(urls) > 0 {
+		sort.Strings(urls)
+		sum := sha256.Sum256([]byte(strings.Join(urls, "\n")))
+		fingerprints = append(fingerprints, "media:"+hex.EncodeToString(sum[:]))
 	}
-	sort.Strings(urls)
-	sum := sha256.Sum256([]byte(strings.Join(urls, "\n")))
-	return "media:" + hex.EncodeToString(sum[:]), nil
+	if imageCount > 0 && !missingImagePHash && len(phashes) == imageCount {
+		sort.Strings(phashes)
+		sort.Strings(videoURLs)
+		sum := sha256.Sum256([]byte("phash\n" + strings.Join(phashes, "\n") + "\nvideo\n" + strings.Join(videoURLs, "\n")))
+		fingerprints = append(fingerprints, "media-phash:"+hex.EncodeToString(sum[:]))
+	}
+	return uniquePushFingerprints(fingerprints), nil
+}
+
+func uniquePushFingerprints(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func pushDedupKey(botKey string, chatID int64, fingerprint string) string {
@@ -589,6 +654,16 @@ func (s *sLazySheepTGGo) pushDedupSeen(ctx context.Context, botKey, bindingKey s
 	return false, nil
 }
 
+func (s *sLazySheepTGGo) pushDedupSeenAny(ctx context.Context, botKey, bindingKey string, chatID int64, fingerprints []string) (bool, error) {
+	for _, fingerprint := range uniquePushFingerprints(fingerprints) {
+		seen, err := s.pushDedupSeen(ctx, botKey, bindingKey, chatID, fingerprint)
+		if err != nil || seen {
+			return seen, err
+		}
+	}
+	return false, nil
+}
+
 func (s *sLazySheepTGGo) pushDedupReserve(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprint string) (bool, error) {
 	if botKey == "" || chatID == 0 || fingerprint == "" {
 		return true, nil
@@ -617,6 +692,20 @@ func (s *sLazySheepTGGo) pushDedupReserve(ctx context.Context, botKey, bindingKe
 		return false, gerror.Wrap(err, "写入推送去重记录失败")
 	}
 	return true, cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
+}
+
+func (s *sLazySheepTGGo) pushDedupReserveAny(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprints []string) (bool, error) {
+	fingerprints = uniquePushFingerprints(fingerprints)
+	if len(fingerprints) == 0 {
+		return true, nil
+	}
+	for _, fingerprint := range fingerprints {
+		reserved, err := s.pushDedupReserve(ctx, botKey, bindingKey, chatID, noteID, contentID, fingerprint)
+		if err != nil || !reserved {
+			return reserved, err
+		}
+	}
+	return true, nil
 }
 
 func (s *sLazySheepTGGo) pushDedupRemember(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprint string, taskID int64, status int) error {
@@ -664,18 +753,27 @@ func (s *sLazySheepTGGo) pushDedupRemember(ctx context.Context, botKey, bindingK
 	return cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
 }
 
+func (s *sLazySheepTGGo) pushDedupRememberAny(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprints []string, taskID int64, status int) error {
+	for _, fingerprint := range uniquePushFingerprints(fingerprints) {
+		if err := s.pushDedupRemember(ctx, botKey, bindingKey, chatID, noteID, contentID, fingerprint, taskID, status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *sLazySheepTGGo) pushDedupMarkDone(ctx context.Context, botKey string, chatID int64, contentID int64, noteID int64) error {
-	fingerprint, err := s.pushDedupFingerprint(ctx, contentID, noteID)
+	fingerprints, err := s.pushDedupFingerprints(ctx, contentID, noteID)
 	if err != nil {
 		return err
 	}
-	if botKey == "" || chatID == 0 || fingerprint == "" {
+	if botKey == "" || chatID == 0 || len(fingerprints) == 0 {
 		return nil
 	}
 	_, err = g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
 		Where("bot_key", botKey).
 		Where("chat_id", chatID).
-		Where("fingerprint", fingerprint).
+		WhereIn("fingerprint", uniquePushFingerprints(fingerprints)).
 		Data(g.Map{"status": 2, "updated_at": gtime.Now()}).
 		Update()
 	return err
@@ -850,8 +948,8 @@ func (s *sLazySheepTGGo) deleteBindingPushedMessages(ctx context.Context, botKey
 	return deleted, failed, nil
 }
 
-func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context, botKey string, binding *model.BindingRecord, chatID int64, keep map[string]struct{}) (removedNotes int, deletedMessages int, failedMessages int, err error) {
-	if binding == nil || len(keep) == 0 {
+func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context, botKey string, binding *model.BindingRecord, chatID int64, keepURL map[string]struct{}, keepPush map[string]struct{}) (removedNotes int, deletedMessages int, failedMessages int, err error) {
+	if binding == nil || len(keepURL) == 0 {
 		return 0, 0, 0, nil
 	}
 	targetChatID := pushTargetChatID(binding, chatID)
@@ -874,14 +972,28 @@ func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context
 	}
 	removeNoteIDs := make([]int64, 0)
 	for _, row := range rows {
-		fingerprint, fpErr := s.pushMediaDedupFingerprint(ctx, row.Id)
+		fingerprint, fpErr := s.noteURLFingerprintByNoteID(ctx, row.Id)
 		if fpErr != nil {
 			return 0, 0, 0, fpErr
 		}
 		if fingerprint == "" {
 			continue
 		}
-		if _, ok := keep[fingerprint]; ok {
+		if _, ok := keepURL[fingerprint]; ok {
+			continue
+		}
+		pushFingerprints, fpErr := s.pushMediaDedupFingerprints(ctx, row.Id)
+		if fpErr != nil {
+			return 0, 0, 0, fpErr
+		}
+		keepByPushFingerprint := false
+		for _, pushFingerprint := range pushFingerprints {
+			if _, ok := keepPush[pushFingerprint]; ok {
+				keepByPushFingerprint = true
+				break
+			}
+		}
+		if keepByPushFingerprint {
 			continue
 		}
 		removeNoteIDs = append(removeNoteIDs, row.Id)
@@ -897,6 +1009,37 @@ func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context
 		return 0, deletedMessages, failedMessages, err
 	}
 	return len(removeNoteIDs), deletedMessages, failedMessages, nil
+}
+
+func (s *sLazySheepTGGo) noteURLFingerprintByNoteID(ctx context.Context, noteID int64) (string, error) {
+	if noteID <= 0 {
+		return "", nil
+	}
+	var rows []struct {
+		SourceUrl string `json:"sourceUrl" orm:"source_url"`
+	}
+	if err := g.DB().Model("hg_addon_lazysheep_tggo_note_asset").
+		Fields("source_url").
+		Where("note_id", noteID).
+		Where("source_url !=", "").
+		WhereNull("deleted_at").
+		OrderAsc("source_url").
+		Scan(&rows); err != nil {
+		return "", gerror.Wrap(err, "查询笔记 URL 指纹失败")
+	}
+	urls := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if text := normalizeDedupMediaURL(row.SourceUrl); text != "" {
+			urls = append(urls, text)
+		}
+	}
+	urls = sortedNonEmptyStrings(urls)
+	if len(urls) == 0 {
+		return "", nil
+	}
+	raw, _ := json.Marshal(noteMediaFingerprint{Kind: "media", URLs: urls})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *sLazySheepTGGo) deletePushedMessagesByNoteIDs(ctx context.Context, botKey string, bindingKey string, chatID int64, noteIDs []int64) (deleted int, failed int, err error) {
@@ -1203,11 +1346,11 @@ func (s *sLazySheepTGGo) pushDedupSeenForTask(ctx context.Context, task *lsysin.
 	if task == nil {
 		return false, nil
 	}
-	fingerprint, err := s.pushDedupFingerprint(ctx, task.ContentID, task.NoteID)
+	fingerprints, err := s.pushDedupFingerprints(ctx, task.ContentID, task.NoteID)
 	if err != nil {
 		return false, err
 	}
-	return s.pushDedupSeen(ctx, task.BotKey, task.BindingKey, task.ChatID, fingerprint)
+	return s.pushDedupSeenAny(ctx, task.BotKey, task.BindingKey, task.ChatID, fingerprints)
 }
 
 func isAmbiguousTelegramSendError(err error) bool {

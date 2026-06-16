@@ -54,7 +54,7 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	settings = withBindingCollectorSettings(settings, plugins, binding.PluginState)
 	caption := buildNoteCaption(note, rt.cfg, binding, settings, plugins)
 	g.Log().Debugf(ctx, "%s 推送采集笔记开始 botKey:%s binding:%s noteId:%d targetChat:%d reviewMode:%t", pullTraceTag(ctx), botKey, binding.Key, noteID, targetChatID, reviewMode)
-	msgs, err := s.sendCollectedNoteMainMessage(ctx, rt.client, targetChatID, note, caption, settings)
+	msgs, err := s.sendCollectedNoteMainMessage(ctx, rt.client, rt.cfg.Token, targetChatID, note, caption, settings)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +74,9 @@ func (s *sLazySheepTGGo) pushCollectedNote(ctx context.Context, botKey string, b
 	return msgs, nil
 }
 
-func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, chatID int64, note *pushNote, caption string, settings map[string]any) ([]*models.Message, error) {
+func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, client *bot.Bot, token string, chatID int64, note *pushNote, caption string, settings map[string]any) ([]*models.Message, error) {
 	items, merged := selectQuickMediaItemsForPush(note.Items, settings)
+	g.Log().Debugf(ctx, "%s 推送媒体选择 note:%d mergeVerifyInGroup:%t items:%d selected:%d", pullTraceTag(ctx), note.Id, pushSettingBool(settings, "mergeVerifyInGroup", false), len(note.Items), len(items))
 	mediaAssets, err := buildQuickMediaAssets(ctx, items)
 	if err != nil {
 		return nil, err
@@ -91,7 +92,7 @@ func (s *sLazySheepTGGo) sendCollectedNoteMainMessage(ctx context.Context, clien
 		}
 		return []*models.Message{msg}, nil
 	}
-	msgs, err := sendQuickMediaAssetsWithMode(ctx, client, chatID, mediaAssets, caption, merged)
+	msgs, err := s.sendQuickMediaAssetsWithMode(ctx, client, token, chatID, mediaAssets, caption, merged)
 	if err != nil {
 		return nil, err
 	}

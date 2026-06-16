@@ -282,10 +282,31 @@ func (s *sLazySheepTGGo) insertNoteAsset(ctx context.Context, noteID int64, botI
 		row[cols.PreviewUrl] = attachment.FileUrl
 		row[cols.LocalPath] = attachment.Path
 	}
+	if assetType == "image" {
+		if err := s.ensureNoteAssetPHashField(ctx); err != nil {
+			g.Log().Warningf(ctx, "确保笔记资源感知哈希字段失败 err:%+v", err)
+		} else if phash := mediaPHashFromAttachmentOrSource(ctx, attachment, item.Content, item.Type); phash != "" {
+			row["media_phash"] = phash
+		}
+	}
 	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Data(row).Insert(); err != nil {
 		return gerror.Wrap(err, "保存笔记资源失败")
 	}
 	return nil
+}
+
+func mediaPHashFromAttachmentOrSource(ctx context.Context, attachment *isysin.AttachmentListModel, sourceURL string, itemType string) string {
+	if attachment != nil {
+		if phash := mediaPHashFromLocalPath(attachment.Path); phash != "" {
+			return phash
+		}
+	}
+	_, data, _, err := downloadCachedMedia(ctx, sourceURL, itemType, 0)
+	if err != nil {
+		g.Log().Warningf(ctx, "计算图片感知哈希下载失败 url:%s err:%+v", sourceURL, err)
+		return ""
+	}
+	return mediaPHashFromBytes(data)
 }
 
 func (s *sLazySheepTGGo) StoreNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error) {

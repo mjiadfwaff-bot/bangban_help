@@ -10,15 +10,20 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"image"
 	"image/jpeg"
 	_ "image/png"
+	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -45,6 +50,7 @@ const (
 	quickPhotoCompressTargetBytes = 9500 << 10
 	quickMediaGroupMaxUploadBytes = 45 << 20
 	quickMediaDownloadConcurrency = 8
+	quickVideoThumbnailMaxBytes   = 190 << 10
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
 )
 
@@ -114,7 +120,7 @@ func (s *sLazySheepTGGo) pushQuickCollectedNote(ctx context.Context, botKey stri
 		return s.sendQuickText(ctx, rt.client, targetChatID, caption)
 	}
 
-	msgs, err := sendQuickMediaAssetsWithMode(ctx, rt.client, targetChatID, mediaAssets, caption, merged)
+	msgs, err := s.sendQuickMediaAssetsWithMode(ctx, rt.client, rt.cfg.Token, targetChatID, mediaAssets, caption, merged)
 	if err != nil {
 		return err
 	}
@@ -158,6 +164,7 @@ type quickMediaAsset struct {
 	Data         []byte
 	SourceURL    string
 	ThumbnailURL string
+	Thumbnail    []byte
 	Duration     int
 	AspectRatio  float64
 	TgFileID     string
@@ -197,14 +204,6 @@ func selectQuickMediaItemsForPush(items []noteItem, settings map[string]any) ([]
 	if len(media) == 0 || len(verifyVideos)+len(normalVideos) == 0 {
 		return items, false
 	}
-	if len(media) <= quickMediaGroupLimit {
-		for i := range media {
-			if media[i].Type == noteTypeVideo {
-				media[i].VerifyVideo = true
-			}
-		}
-		return media, true
-	}
 	selected := make([]noteItem, 0, quickMediaGroupLimit)
 	selected = append(selected, images...)
 	for _, item := range verifyVideos {
@@ -213,11 +212,13 @@ func selectQuickMediaItemsForPush(items []noteItem, settings map[string]any) ([]
 		}
 		selected = append(selected, item)
 	}
-	for _, item := range normalVideos {
-		if len(selected) >= quickMediaGroupLimit || selectedVideoCount(selected) >= quickMergeVideoLimit {
-			break
+	if len(verifyVideos) == 0 {
+		for _, item := range normalVideos {
+			if len(selected) >= quickMediaGroupLimit || selectedVideoCount(selected) >= quickMergeVideoLimit {
+				break
+			}
+			selected = append(selected, item)
 		}
-		selected = append(selected, item)
 	}
 	return selected, true
 }
@@ -329,6 +330,7 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 					Data:         data,
 					SourceURL:    strings.TrimSpace(item.Content),
 					ThumbnailURL: thumbURL,
+					Thumbnail:    buildQuickVideoThumbnail(ctx, data, filename),
 					Duration:     item.Duration,
 					AspectRatio:  item.AspectRatio,
 					VerifyVideo:  item.VerifyVideo,
@@ -348,6 +350,93 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 		return nil, gerror.Newf("媒体准备失败，已取消推送：需要 %d 个媒体，成功 %d 个，失败 %d 个。%s", expected, len(out), expected-len(out), limitMediaPrepareErrors(errs))
 	}
 	return out, nil
+}
+
+func buildQuickVideoThumbnail(ctx context.Context, data []byte, filename string) []byte {
+	frame := extractQuickVideoFrame(ctx, data, filename)
+	if len(frame) == 0 {
+		return nil
+	}
+	return encodeQuickVideoThumbnail(frame)
+}
+
+func encodeQuickVideoThumbnail(data []byte) []byte {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	if width > 320 || height > 320 {
+		scale := 320.0 / float64(width)
+		if hScale := 320.0 / float64(height); hScale < scale {
+			scale = hScale
+		}
+		width = int(float64(width) * scale)
+		height = int(float64(height) * scale)
+		img = resizeQuickImage(img, width, height)
+	}
+	for _, quality := range []int{82, 76, 70, 64, 58, 52, 46} {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+			continue
+		}
+		if buf.Len() > 0 && buf.Len() <= quickVideoThumbnailMaxBytes {
+			return buf.Bytes()
+		}
+	}
+	return nil
+}
+
+func extractQuickVideoFrame(ctx context.Context, data []byte, filename string) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		g.Log().Warningf(ctx, "%s ffmpeg 不存在，跳过视频缩略图生成", pullTraceTag(ctx))
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "tggo-video-thumb-*")
+	if err != nil {
+		g.Log().Warningf(ctx, "%s 创建视频缩略图临时目录失败 err:%+v", pullTraceTag(ctx), err)
+		return nil
+	}
+	defer os.RemoveAll(dir)
+	input := filepath.Join(dir, sanitizeQuickMediaFilename(filename))
+	if strings.TrimSpace(filepath.Ext(input)) == "" {
+		input += ".mp4"
+	}
+	output := filepath.Join(dir, "thumb.jpg")
+	if err = os.WriteFile(input, data, 0600); err != nil {
+		g.Log().Warningf(ctx, "%s 写入视频缩略图临时文件失败 err:%+v", pullTraceTag(ctx), err)
+		return nil
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	args := []string{
+		"-y",
+		"-ss", "00:00:01",
+		"-i", input,
+		"-frames:v", "1",
+		"-vf", "scale='min(320,iw)':-2",
+		"-q:v", "3",
+		output,
+	}
+	out, err := exec.CommandContext(cmdCtx, "ffmpeg", args...).CombinedOutput()
+	if err != nil {
+		g.Log().Warningf(ctx, "%s 生成视频缩略图失败 err:%+v output:%s", pullTraceTag(ctx), err, limitPushLogError(string(out)))
+		return nil
+	}
+	thumb, err := os.ReadFile(output)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s 读取视频缩略图失败 err:%+v", pullTraceTag(ctx), err)
+		return nil
+	}
+	return thumb
 }
 
 func abbreviateMediaURL(rawURL string) string {
@@ -493,13 +582,14 @@ func sendQuickMediaChunk(ctx context.Context, client *bot.Bot, chatID int64, ass
 }
 
 func sendQuickMediaAssets(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string) ([]*models.Message, error) {
-	return sendQuickMediaAssetsWithMode(ctx, client, chatID, assets, caption, false)
+	return (&sLazySheepTGGo{}).sendQuickMediaAssetsWithMode(ctx, client, "", chatID, assets, caption, false)
 }
 
-func sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string, mergeGroup bool) ([]*models.Message, error) {
+func (s *sLazySheepTGGo) sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, token string, chatID int64, assets []quickMediaAsset, caption string, mergeGroup bool) ([]*models.Message, error) {
 	messages := make([]*models.Message, 0, len(assets))
 	captionUsed := false
 	for _, part := range splitQuickMediaAssetsWithMode(assets, mergeGroup) {
+		g.Log().Debugf(ctx, "%s TG 媒体发送分组 merge:%t items:%d uploadBytes:%d", pullTraceTag(ctx), mergeGroup, len(part), quickMediaChunkUploadBytes(part))
 		partCaption := ""
 		if !captionUsed {
 			partCaption = caption
@@ -530,7 +620,13 @@ func sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, chatID i
 			messages = append(messages, msg)
 			continue
 		}
-		msgs, err := sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
+		var msgs []*models.Message
+		var err error
+		if mergeGroup && strings.TrimSpace(token) != "" {
+			msgs, err = s.sendQuickMediaGroupMultipart(ctx, token, chatID, part, partCaption, reply)
+		} else {
+			msgs, err = sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
+		}
 		if err != nil {
 			if len(messages) > 0 {
 				g.Log().Warningf(ctx, "%s TG 媒体部分发送成功，跳过剩余媒体避免整条重复 chat:%d sent:%d err:%+v", pullTraceTag(ctx), chatID, len(messages), err)
@@ -545,7 +641,13 @@ func sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, chatID i
 
 func splitQuickMediaAssetsWithMode(assets []quickMediaAsset, mergeGroup bool) [][]quickMediaAsset {
 	if mergeGroup {
-		return chunkQuickMediaAssets(assets, quickMediaGroupLimit)
+		if len(assets) == 0 {
+			return nil
+		}
+		if len(assets) > quickMediaGroupLimit {
+			assets = assets[:quickMediaGroupLimit]
+		}
+		return [][]quickMediaAsset{assets}
 	}
 	return splitQuickMediaAssets(assets)
 }
@@ -612,6 +714,12 @@ func sendQuickVideoAsset(ctx context.Context, client *bot.Bot, chatID int64, ass
 		SupportsStreaming: true,
 		ReplyParameters:   reply,
 	}
+	if len(asset.Thumbnail) > 0 && strings.TrimSpace(asset.TgFileID) == "" {
+		params.Thumbnail = &models.InputFileUpload{
+			Filename: quickThumbnailFilename(asset.Filename),
+			Data:     bytes.NewReader(asset.Thumbnail),
+		}
+	}
 	started := time.Now()
 	msg, err := client.SendVideo(ctx, params)
 	if err != nil {
@@ -644,6 +752,138 @@ func sendQuickDocumentAsset(ctx context.Context, client *bot.Bot, chatID int64, 
 		updateTelegramFileID(ctx, asset.SourceURL, fileID)
 	}
 	return msg, nil
+}
+
+type telegramMediaGroupResponse struct {
+	OK          bool              `json:"ok"`
+	Result      []*models.Message `json:"result"`
+	Description string            `json:"description"`
+	ErrorCode   int               `json:"error_code"`
+	Parameters  *struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
+}
+
+func (s *sLazySheepTGGo) sendQuickMediaGroupMultipart(ctx context.Context, token string, chatID int64, assets []quickMediaAsset, caption string, reply *models.ReplyParameters) ([]*models.Message, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, gerror.New("Telegram Bot Token 不能为空")
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", fmt.Sprintf("%d", chatID)); err != nil {
+		return nil, err
+	}
+	if reply != nil {
+		replyRaw, _ := json.Marshal(reply)
+		if err := writer.WriteField("reply_parameters", string(replyRaw)); err != nil {
+			return nil, err
+		}
+	}
+	media := make([]map[string]any, 0, len(assets))
+	for index, asset := range assets {
+		mediaName := quickMediaAttachName("media", index, asset.Filename)
+		mediaValue := "attach://" + mediaName
+		if strings.TrimSpace(asset.TgFileID) != "" {
+			mediaValue = strings.TrimSpace(asset.TgFileID)
+		}
+		item := map[string]any{
+			"media": mediaValue,
+		}
+		switch asset.Type {
+		case noteTypeVideo:
+			item["type"] = "video"
+			item["supports_streaming"] = true
+			if asset.Duration > 0 {
+				item["duration"] = asset.Duration
+			}
+			width, height := videoDimensions(asset.AspectRatio)
+			if width > 0 && height > 0 {
+				item["width"] = width
+				item["height"] = height
+			}
+			if len(asset.Thumbnail) > 0 {
+				thumbName := quickMediaAttachName("thumb", index, quickThumbnailFilename(asset.Filename))
+				item["thumbnail"] = "attach://" + thumbName
+				if err := writeMultipartFile(writer, thumbName, quickThumbnailFilename(asset.Filename), asset.Thumbnail); err != nil {
+					return nil, err
+				}
+			}
+		case quickMediaTypeDocument:
+			item["type"] = "document"
+		default:
+			item["type"] = "photo"
+		}
+		if index == 0 && strings.TrimSpace(caption) != "" {
+			item["caption"] = caption
+			item["parse_mode"] = string(models.ParseModeHTML)
+		}
+		if strings.TrimSpace(asset.TgFileID) == "" {
+			if err := writeMultipartFile(writer, mediaName, asset.Filename, asset.Data); err != nil {
+				return nil, err
+			}
+		}
+		media = append(media, item)
+	}
+	mediaRaw, _ := json.Marshal(media)
+	if err := writer.WriteField("media", string(mediaRaw)); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	httpClient, err := s.telegramHTTPClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+token+"/sendMediaGroup", &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	started := time.Now()
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s TG 媒体组 multipart 发送失败 items:%d elapsed:%s err:%+v", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out telegramMediaGroupResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, gerror.Wrap(err, "解析 Telegram 媒体组响应失败")
+	}
+	if resp.StatusCode >= 300 || !out.OK {
+		errText := strings.TrimSpace(out.Description)
+		if errText == "" {
+			errText = string(raw)
+		}
+		if out.Parameters != nil && out.Parameters.RetryAfter > 0 {
+			errText = fmt.Sprintf("%s: retry_after %d", errText, out.Parameters.RetryAfter)
+		}
+		g.Log().Warningf(ctx, "%s TG 媒体组 multipart 发送失败 items:%d elapsed:%s err:%s", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond), errText)
+		return nil, gerror.New(errText)
+	}
+	g.Log().Debugf(ctx, "%s TG 媒体组 multipart 发送成功 items:%d elapsed:%s", pullTraceTag(ctx), len(assets), time.Since(started).Round(time.Millisecond))
+	rememberQuickTelegramMedia(ctx, assets, out.Result)
+	return out.Result, nil
+}
+
+func writeMultipartFile(writer *multipart.Writer, fieldName, filename string, data []byte) error {
+	if len(data) == 0 {
+		return gerror.Newf("上传文件为空：%s", filename)
+	}
+	part, err := writer.CreateFormFile(fieldName, sanitizeQuickMediaFilename(filename))
+	if err != nil {
+		return err
+	}
+	_, err = part.Write(data)
+	return err
+}
+
+func quickMediaAttachName(prefix string, index int, filename string) string {
+	seed := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s", prefix, index, filename)))
+	return fmt.Sprintf("%s_%d_%s", prefix, index, hex.EncodeToString(seed[:4]))
 }
 
 func quickInputFile(asset quickMediaAsset) models.InputFile {
@@ -680,8 +920,12 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 				video.Media = "attach://" + asset.Filename
 				video.MediaAttachment = bytes.NewReader(asset.Data)
 			}
-			if strings.TrimSpace(asset.ThumbnailURL) != "" {
+			if strings.TrimSpace(asset.ThumbnailURL) != "" && len(asset.Thumbnail) == 0 {
 				video.Thumbnail = &models.InputFileString{Data: asset.ThumbnailURL}
+			}
+			if len(asset.Thumbnail) > 0 && strings.TrimSpace(asset.TgFileID) == "" {
+				name := quickThumbnailFilename(asset.Filename)
+				video.Thumbnail = &models.InputFileString{Data: "attach://" + name}
 			}
 			out = append(out, video)
 		case quickMediaTypeDocument:
@@ -698,7 +942,18 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 	return out
 }
 
+func quickThumbnailFilename(filename string) string {
+	base := strings.TrimSuffix(path.Base(filename), filepath.Ext(filename))
+	if base == "" || base == "." || base == "/" {
+		base = "thumb"
+	}
+	return sanitizeQuickMediaFilename(base + "_thumb.jpg")
+}
+
 func cachedQuickTelegramMedia(ctx context.Context, item noteItem, index int) *quickMediaAsset {
+	if item.Type == noteTypeVideo {
+		return nil
+	}
 	fileID := strings.TrimSpace(item.TgFileID)
 	if fileID == "" {
 		if cachedID, cachedType := cachedTelegramFileIDBySourceURL(ctx, item.Content); cachedID != "" {
@@ -961,6 +1216,14 @@ func quickMediaUploadBytes(item quickMediaAsset) int {
 		return 0
 	}
 	return len(item.Data)
+}
+
+func quickMediaChunkUploadBytes(items []quickMediaAsset) int {
+	total := 0
+	for _, item := range items {
+		total += quickMediaUploadBytes(item)
+	}
+	return total
 }
 
 func applyCaptionToFirstMedia(chunk []models.InputMedia, caption string) {
