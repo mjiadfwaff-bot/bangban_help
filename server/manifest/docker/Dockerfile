@@ -5,7 +5,8 @@ FROM loads/alpine:3.8
 ###############################################################################
 
 ENV WORKDIR                 /app
-RUN apk add --no-cache ffmpeg
+RUN echo "http://mirrors.ustc.edu.cn/alpine/v3.8/community" >> /etc/apk/repositories \
+    && apk add --no-cache ffmpeg
 ADD hack                $WORKDIR/hack/
 ADD manifest/config                $WORKDIR/manifest/config/
 ADD resource                $WORKDIR/resource/
