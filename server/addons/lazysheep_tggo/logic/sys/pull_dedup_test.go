@@ -1,7 +1,11 @@
 package sys
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"testing"
 
 	"hotgo/addons/lazysheep_tggo/model"
@@ -155,7 +159,7 @@ func TestCollectorMergeVerifyGroupEnabledDefaultsToEnabled(t *testing.T) {
 	}
 }
 
-func TestSplitQuickMediaAssetsWithMergeModeUsesCountOnly(t *testing.T) {
+func TestSplitQuickMediaAssetsWithMergeModeKeepsSmallMediaTogether(t *testing.T) {
 	assets := make([]quickMediaAsset, 0, quickMediaGroupLimit)
 	for i := 0; i < quickMediaGroupLimit-1; i++ {
 		assets = append(assets, quickMediaAsset{
@@ -179,7 +183,7 @@ func TestSplitQuickMediaAssetsWithMergeModeUsesCountOnly(t *testing.T) {
 	}
 }
 
-func TestSplitQuickMediaAssetsUsesCountOnly(t *testing.T) {
+func TestSplitQuickMediaAssetsSplitsByCount(t *testing.T) {
 	assets := make([]quickMediaAsset, 0, quickMediaGroupLimit+1)
 	for i := 0; i < quickMediaGroupLimit+1; i++ {
 		assets = append(assets, quickMediaAsset{
@@ -194,5 +198,57 @@ func TestSplitQuickMediaAssetsUsesCountOnly(t *testing.T) {
 	}
 	if len(parts[0]) != quickMediaGroupLimit || len(parts[1]) != 1 {
 		t.Fatalf("unexpected group sizes: %d and %d", len(parts[0]), len(parts[1]))
+	}
+}
+
+func TestSplitQuickMediaAssetsSplitsByUploadSize(t *testing.T) {
+	assets := []quickMediaAsset{
+		{Type: noteTypeImage, SourceURL: "https://img.example/1.jpg", Data: make([]byte, quickMediaGroupMaxUploadBytes/2+1)},
+		{Type: noteTypeImage, SourceURL: "https://img.example/2.jpg", Data: make([]byte, quickMediaGroupMaxUploadBytes/2+1)},
+	}
+	parts := splitQuickMediaAssetsWithMode(assets, true)
+	if len(parts) != 2 {
+		t.Fatalf("expected media to split by upload size, got %d groups", len(parts))
+	}
+	if len(parts[0]) != 1 || len(parts[1]) != 1 {
+		t.Fatalf("unexpected group sizes: %d and %d", len(parts[0]), len(parts[1]))
+	}
+}
+
+func TestSplitQuickMediaAssetsSendsDocumentAlone(t *testing.T) {
+	assets := []quickMediaAsset{
+		{Type: noteTypeImage, SourceURL: "https://img.example/1.jpg", Data: make([]byte, 8)},
+		{Type: quickMediaTypeDocument, SourceURL: "https://img.example/big.jpg", Data: make([]byte, quickPhotoMaxBytes+1)},
+		{Type: noteTypeImage, SourceURL: "https://img.example/2.jpg", Data: make([]byte, 8)},
+	}
+	parts := splitQuickMediaAssetsWithMode(assets, true)
+	if len(parts) != 3 {
+		t.Fatalf("expected document to be isolated, got %d groups", len(parts))
+	}
+	if parts[1][0].Type != quickMediaTypeDocument {
+		t.Fatalf("expected middle group to be document, got %#v", parts[1][0])
+	}
+}
+
+func TestCompressQuickPhotoForTelegram(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2200, 2200))
+	for y := 0; y < 2200; y++ {
+		for x := 0; x < 2200; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x + y), A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	name, data, err := compressQuickPhotoForTelegram(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name == "" || len(data) == 0 {
+		t.Fatal("expected compressed photo")
+	}
+	if len(data) > quickPhotoMaxBytes {
+		t.Fatalf("compressed photo is too large: %d", len(data))
 	}
 }

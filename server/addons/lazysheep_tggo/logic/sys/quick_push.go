@@ -13,6 +13,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +30,8 @@ import (
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
+	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 	"hotgo/addons/lazysheep_tggo/model"
 	"hotgo/internal/dao"
 )
@@ -36,9 +41,14 @@ const (
 	quickMergeImageLimit          = 8
 	quickMergeVideoLimit          = 2
 	quickMediaMaxBytes            = 48 << 20
+	quickPhotoMaxBytes            = 10 << 20
+	quickPhotoCompressTargetBytes = 9500 << 10
+	quickMediaGroupMaxUploadBytes = 45 << 20
 	quickMediaDownloadConcurrency = 8
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
 )
+
+const quickMediaTypeDocument = "TG_DOCUMENT"
 
 var quickMediaHTTPClient = &http.Client{
 	Timeout: 90 * time.Second,
@@ -271,6 +281,17 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 				}
 				g.Log().Debugf(ctx, "%s 下载快速推送图片完成 index:%d bytes:%d", pullTraceTag(ctx), idx, len(data))
 				mediaType := resolveQuickMediaType(item.Type, filename, data, contentType)
+				if mediaType == noteTypeImage && len(data) > quickPhotoMaxBytes {
+					compressedName, compressedData, compressErr := compressQuickPhotoForTelegram(data)
+					if compressErr != nil {
+						g.Log().Warningf(ctx, "%s 图片压缩失败，降级文件发送 url:%s bytes:%d err:%+v", pullTraceTag(ctx), item.Content, len(data), compressErr)
+						mediaType = quickMediaTypeDocument
+					} else {
+						g.Log().Debugf(ctx, "%s 图片压缩完成 index:%d before:%d after:%d", pullTraceTag(ctx), idx, len(data), len(compressedData))
+						filename = quickCompressedMediaFilename(filename, compressedName)
+						data = compressedData
+					}
+				}
 				results[idx] = &quickMediaAsset{
 					Type:        mediaType,
 					Filename:    filename,
@@ -347,6 +368,56 @@ func limitMediaPrepareErrors(items []string) string {
 	return strings.Join(items, "；")
 }
 
+func compressQuickPhotoForTelegram(data []byte) (filename string, out []byte, err error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", nil, gerror.Wrap(err, "解码图片失败")
+	}
+	if encoded := encodeQuickJPEGWithinLimit(img, quickPhotoCompressTargetBytes); len(encoded) > 0 {
+		return "photo.jpg", encoded, nil
+	}
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	for _, scale := range []float64{0.9, 0.8, 0.7, 0.6, 0.5, 0.4} {
+		resized := resizeQuickImage(img, int(float64(width)*scale), int(float64(height)*scale))
+		if encoded := encodeQuickJPEGWithinLimit(resized, quickPhotoCompressTargetBytes); len(encoded) > 0 {
+			return "photo.jpg", encoded, nil
+		}
+	}
+	return "", nil, gerror.New("图片压缩后仍超过 Telegram photo 限制")
+}
+
+func encodeQuickJPEGWithinLimit(img image.Image, limit int) []byte {
+	for _, quality := range []int{88, 82, 76, 70, 64, 58, 52} {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+			continue
+		}
+		if buf.Len() > 0 && buf.Len() <= limit {
+			return buf.Bytes()
+		}
+	}
+	return nil
+}
+
+func resizeQuickImage(src image.Image, width, height int) image.Image {
+	if width <= 0 || height <= 0 {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Over, nil)
+	return dst
+}
+
+func quickCompressedMediaFilename(original, fallback string) string {
+	base := strings.TrimSuffix(path.Base(original), filepath.Ext(original))
+	if base == "" || base == "." || base == "/" {
+		return fallback
+	}
+	return sanitizeQuickMediaFilename(base + ".jpg")
+}
+
 type quickLocationItem struct {
 	Title    string
 	SubTitle string
@@ -388,7 +459,16 @@ func buildQuickLocationBlock(items []quickLocationItem) string {
 
 func sendQuickMediaChunk(ctx context.Context, client *bot.Bot, chatID int64, assets []quickMediaAsset, caption string, reply *models.ReplyParameters) ([]*models.Message, error) {
 	if len(assets) == 1 {
-		msg, err := sendQuickPhotoAsset(ctx, client, chatID, assets[0], caption, reply)
+		var msg *models.Message
+		var err error
+		switch assets[0].Type {
+		case noteTypeVideo:
+			msg, err = sendQuickVideoAsset(ctx, client, chatID, assets[0], caption, reply)
+		case quickMediaTypeDocument:
+			msg, err = sendQuickDocumentAsset(ctx, client, chatID, assets[0], caption, reply)
+		default:
+			msg, err = sendQuickPhotoAsset(ctx, client, chatID, assets[0], caption, reply)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -432,8 +512,14 @@ func sendQuickMediaAssetsWithMode(ctx context.Context, client *bot.Bot, chatID i
 				AllowSendingWithoutReply: true,
 			}
 		}
-		if len(part) == 1 && part[0].Type == noteTypeVideo {
-			msg, err := sendQuickVideoAsset(ctx, client, chatID, part[0], partCaption, reply)
+		if len(part) == 1 && (part[0].Type == noteTypeVideo || part[0].Type == quickMediaTypeDocument) {
+			var msg *models.Message
+			var err error
+			if part[0].Type == noteTypeVideo {
+				msg, err = sendQuickVideoAsset(ctx, client, chatID, part[0], partCaption, reply)
+			} else {
+				msg, err = sendQuickDocumentAsset(ctx, client, chatID, part[0], partCaption, reply)
+			}
 			if err != nil {
 				if len(messages) > 0 {
 					g.Log().Warningf(ctx, "%s TG 媒体部分发送成功，跳过剩余媒体避免整条重复 chat:%d sent:%d err:%+v", pullTraceTag(ctx), chatID, len(messages), err)
@@ -475,6 +561,11 @@ func splitQuickMediaAssets(assets []quickMediaAsset) [][]quickMediaAsset {
 		photos = make([]quickMediaAsset, 0, quickMediaGroupLimit)
 	}
 	for _, asset := range assets {
+		if asset.Type == quickMediaTypeDocument {
+			flushPhotos()
+			parts = append(parts, []quickMediaAsset{asset})
+			continue
+		}
 		if len(photos) > 0 && asset.Type != photos[0].Type {
 			flushPhotos()
 		}
@@ -534,6 +625,27 @@ func sendQuickVideoAsset(ctx context.Context, client *bot.Bot, chatID int64, ass
 	return msg, nil
 }
 
+func sendQuickDocumentAsset(ctx context.Context, client *bot.Bot, chatID int64, asset quickMediaAsset, caption string, reply *models.ReplyParameters) (*models.Message, error) {
+	params := &bot.SendDocumentParams{
+		ChatID:          chatID,
+		Document:        quickInputFile(asset),
+		Caption:         caption,
+		ParseMode:       models.ParseModeHTML,
+		ReplyParameters: reply,
+	}
+	started := time.Now()
+	msg, err := client.SendDocument(ctx, params)
+	if err != nil {
+		g.Log().Warningf(ctx, "%s TG 文件发送失败 elapsed:%s err:%+v", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	g.Log().Debugf(ctx, "%s TG 文件发送成功 elapsed:%s", pullTraceTag(ctx), time.Since(started).Round(time.Millisecond))
+	if fileID := telegramFileIDFromMessage(msg, quickMediaTypeDocument); fileID != "" {
+		updateTelegramFileID(ctx, asset.SourceURL, fileID)
+	}
+	return msg, nil
+}
+
 func quickInputFile(asset quickMediaAsset) models.InputFile {
 	if strings.TrimSpace(asset.TgFileID) != "" {
 		return &models.InputFileString{Data: asset.TgFileID}
@@ -572,6 +684,15 @@ func quickMediaAssetsToInput(assets []quickMediaAsset) []models.InputMedia {
 				video.Thumbnail = &models.InputFileString{Data: asset.ThumbnailURL}
 			}
 			out = append(out, video)
+		case quickMediaTypeDocument:
+			if strings.TrimSpace(asset.TgFileID) != "" {
+				out = append(out, &models.InputMediaDocument{Media: asset.TgFileID})
+				continue
+			}
+			out = append(out, &models.InputMediaDocument{
+				Media:           "attach://" + asset.Filename,
+				MediaAttachment: bytes.NewReader(asset.Data),
+			})
 		}
 	}
 	return out
@@ -626,6 +747,8 @@ func cachedTelegramFileIDBySourceURL(ctx context.Context, rawURL string) (string
 	mediaType := noteTypeImage
 	if row.AssetType == "video" || row.AssetType == "verify_video" {
 		mediaType = noteTypeVideo
+	} else if row.AssetType == "document" {
+		mediaType = quickMediaTypeDocument
 	}
 	return strings.TrimSpace(row.TgFileId), mediaType
 }
@@ -650,11 +773,17 @@ func telegramFileIDFromMessage(msg *models.Message, mediaType string) string {
 	if mediaType == noteTypeVideo && msg.Video != nil {
 		return strings.TrimSpace(msg.Video.FileID)
 	}
+	if mediaType == quickMediaTypeDocument && msg.Document != nil {
+		return strings.TrimSpace(msg.Document.FileID)
+	}
 	if len(msg.Photo) > 0 {
 		return strings.TrimSpace(msg.Photo[len(msg.Photo)-1].FileID)
 	}
 	if msg.Video != nil {
 		return strings.TrimSpace(msg.Video.FileID)
+	}
+	if msg.Document != nil {
+		return strings.TrimSpace(msg.Document.FileID)
 	}
 	return ""
 }
@@ -800,15 +929,38 @@ func chunkQuickMediaAssets(items []quickMediaAsset, size int) [][]quickMediaAsse
 		return nil
 	}
 	out := make([][]quickMediaAsset, 0, (len(items)+size-1)/size)
-	for len(items) > 0 {
-		n := size
-		if len(items) < n {
-			n = len(items)
+	current := make([]quickMediaAsset, 0, size)
+	currentBytes := 0
+	flush := func() {
+		if len(current) == 0 {
+			return
 		}
-		out = append(out, items[:n])
-		items = items[n:]
+		out = append(out, current)
+		current = make([]quickMediaAsset, 0, size)
+		currentBytes = 0
 	}
+	for _, item := range items {
+		if item.Type == quickMediaTypeDocument {
+			flush()
+			out = append(out, []quickMediaAsset{item})
+			continue
+		}
+		itemBytes := quickMediaUploadBytes(item)
+		if len(current) >= size || (len(current) > 0 && currentBytes+itemBytes > quickMediaGroupMaxUploadBytes) {
+			flush()
+		}
+		current = append(current, item)
+		currentBytes += itemBytes
+	}
+	flush()
 	return out
+}
+
+func quickMediaUploadBytes(item quickMediaAsset) int {
+	if strings.TrimSpace(item.TgFileID) != "" {
+		return 0
+	}
+	return len(item.Data)
 }
 
 func applyCaptionToFirstMedia(chunk []models.InputMedia, caption string) {
