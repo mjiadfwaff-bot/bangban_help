@@ -48,6 +48,7 @@ const (
 	quickPhotoMaxBytes            = 10 << 20
 	quickPhotoCompressTargetBytes = 9500 << 10
 	quickMediaGroupMaxUploadBytes = 45 << 20
+	quickMediaGroupTargetBytes    = 42 << 20
 	quickMediaDownloadConcurrency = 8
 	quickVideoThumbnailMaxBytes   = 190 << 10
 	bangchatMediaSecret           = "dc7f7fbb4f36fbb43071882d4a1ae7a514996adcb21464e6988eccaa64aa3ed3"
@@ -289,8 +290,11 @@ func buildQuickMediaAssets(ctx context.Context, items []noteItem) ([]quickMediaA
 				if mediaType == noteTypeImage && len(data) > quickPhotoMaxBytes {
 					compressedName, compressedData, compressErr := compressQuickPhotoForTelegram(data)
 					if compressErr != nil {
-						g.Log().Warningf(ctx, "%s 图片压缩失败，降级文件发送 url:%s bytes:%d err:%+v", pullTraceTag(ctx), item.Content, len(data), compressErr)
-						mediaType = quickMediaTypeDocument
+						g.Log().Warningf(ctx, "%s 图片压缩失败 url:%s bytes:%d err:%+v", pullTraceTag(ctx), item.Content, len(data), compressErr)
+						errMu.Lock()
+						errs = append(errs, fmt.Sprintf("图片:%s 压缩失败: %v", abbreviateMediaURL(item.Content), compressErr))
+						errMu.Unlock()
+						return
 					} else {
 						g.Log().Debugf(ctx, "%s 图片压缩完成 index:%d before:%d after:%d", pullTraceTag(ctx), idx, len(data), len(compressedData))
 						filename = quickCompressedMediaFilename(filename, compressedName)
@@ -481,6 +485,73 @@ func compressQuickPhotoForTelegram(data []byte) (filename string, out []byte, er
 	return "", nil, gerror.New("图片压缩后仍超过 Telegram photo 限制")
 }
 
+func compressQuickVideoForTelegram(ctx context.Context, asset quickMediaAsset, targetBytes int) (quickMediaAsset, error) {
+	if len(asset.Data) == 0 {
+		return asset, gerror.New("视频内容为空")
+	}
+	if targetBytes <= 0 || len(asset.Data) <= targetBytes {
+		return asset, nil
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return asset, gerror.Wrap(err, "ffmpeg 不存在，无法压缩视频")
+	}
+	dir, err := os.MkdirTemp("", "tggo-video-compress-*")
+	if err != nil {
+		return asset, gerror.Wrap(err, "创建视频压缩临时目录失败")
+	}
+	defer os.RemoveAll(dir)
+	input := filepath.Join(dir, sanitizeQuickMediaFilename(asset.Filename))
+	if strings.TrimSpace(filepath.Ext(input)) == "" {
+		input += ".mp4"
+	}
+	output := filepath.Join(dir, "compressed.mp4")
+	if err = os.WriteFile(input, asset.Data, 0600); err != nil {
+		return asset, gerror.Wrap(err, "写入视频压缩临时文件失败")
+	}
+	targetKB := targetBytes / 1024
+	if targetKB < 512 {
+		targetKB = 512
+	}
+	args := []string{
+		"-y",
+		"-i", input,
+		"-vf", "scale='min(720,iw)':-2",
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "30",
+		"-maxrate", fmt.Sprintf("%dk", targetKB/2),
+		"-bufsize", fmt.Sprintf("%dk", targetKB),
+		"-c:a", "aac",
+		"-b:a", "96k",
+		"-movflags", "+faststart",
+		output,
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	raw, err := exec.CommandContext(cmdCtx, "ffmpeg", args...).CombinedOutput()
+	if err != nil {
+		return asset, gerror.Newf("视频压缩失败：%v %s", err, limitPushLogError(string(raw)))
+	}
+	compressed, err := os.ReadFile(output)
+	if err != nil {
+		return asset, gerror.Wrap(err, "读取压缩视频失败")
+	}
+	if len(compressed) == 0 {
+		return asset, gerror.New("压缩后视频为空")
+	}
+	if len(compressed) >= len(asset.Data) {
+		return asset, gerror.Newf("视频压缩无收益 before:%d after:%d", len(asset.Data), len(compressed))
+	}
+	if len(compressed) > targetBytes {
+		return asset, gerror.Newf("视频压缩后仍超出目标 before:%d after:%d target:%d", len(asset.Data), len(compressed), targetBytes)
+	}
+	asset.Data = compressed
+	asset.Filename = quickCompressedVideoFilename(asset.Filename)
+	asset.TgFileID = ""
+	asset.Thumbnail = buildQuickVideoThumbnail(ctx, compressed, asset.Filename)
+	return asset, nil
+}
+
 func encodeQuickJPEGWithinLimit(img image.Image, limit int) []byte {
 	for _, quality := range []int{88, 82, 76, 70, 64, 58, 52} {
 		var buf bytes.Buffer
@@ -509,6 +580,14 @@ func quickCompressedMediaFilename(original, fallback string) string {
 		return fallback
 	}
 	return sanitizeQuickMediaFilename(base + ".jpg")
+}
+
+func quickCompressedVideoFilename(original string) string {
+	base := strings.TrimSuffix(path.Base(original), filepath.Ext(original))
+	if base == "" || base == "." || base == "/" {
+		base = "video"
+	}
+	return sanitizeQuickMediaFilename(base + "_compressed.mp4")
 }
 
 type quickLocationItem struct {
@@ -626,10 +705,36 @@ func (s *sLazySheepTGGo) sendQuickMediaAssetsWithMode(ctx context.Context, clien
 		}
 		var msgs []*models.Message
 		var err error
+		if mergeGroup {
+			part, err = prepareQuickMediaGroupForTelegram(ctx, part)
+			if err != nil {
+				return messages, err
+			}
+		}
 		if mergeGroup && strings.TrimSpace(token) != "" {
 			msgs, err = s.sendQuickMediaGroupMultipart(ctx, token, chatID, part, partCaption, reply)
 		} else {
 			msgs, err = sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
+		}
+		if err != nil && isTelegramWrongFileIdentifier(err) && quickMediaPartUsesFileID(part) {
+			g.Log().Warningf(ctx, "%s TG file_id 失效，清理缓存后重传媒体组 chat:%d items:%d err:%+v", pullTraceTag(ctx), chatID, len(part), err)
+			clearQuickTelegramFileIDs(ctx, part)
+			reload, reloadErr := reloadQuickMediaAssetsWithoutFileID(ctx, part)
+			if reloadErr != nil {
+				return messages, reloadErr
+			}
+			if mergeGroup {
+				reload, reloadErr = prepareQuickMediaGroupForTelegram(ctx, reload)
+				if reloadErr != nil {
+					return messages, reloadErr
+				}
+			}
+			part = reload
+			if mergeGroup && strings.TrimSpace(token) != "" {
+				msgs, err = s.sendQuickMediaGroupMultipart(ctx, token, chatID, part, partCaption, reply)
+			} else {
+				msgs, err = sendQuickMediaChunk(ctx, client, chatID, part, partCaption, reply)
+			}
 		}
 		if err != nil {
 			if len(messages) > 0 {
@@ -641,6 +746,108 @@ func (s *sLazySheepTGGo) sendQuickMediaAssetsWithMode(ctx context.Context, clien
 		messages = append(messages, msgs...)
 	}
 	return messages, nil
+}
+
+func isTelegramWrongFileIdentifier(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "wrong file identifier") || strings.Contains(text, "file_id")
+}
+
+func quickMediaPartUsesFileID(assets []quickMediaAsset) bool {
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.TgFileID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func clearQuickTelegramFileIDs(ctx context.Context, assets []quickMediaAsset) {
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.SourceURL) == "" || strings.TrimSpace(asset.TgFileID) == "" {
+			continue
+		}
+		clearTelegramFileID(ctx, asset.SourceURL)
+	}
+}
+
+func reloadQuickMediaAssetsWithoutFileID(ctx context.Context, assets []quickMediaAsset) ([]quickMediaAsset, error) {
+	out := make([]quickMediaAsset, 0, len(assets))
+	for index, asset := range assets {
+		asset.TgFileID = ""
+		if len(asset.Data) > 0 {
+			out = append(out, asset)
+			continue
+		}
+		filename, data, contentType, err := downloadQuickMediaWithType(ctx, asset.SourceURL, asset.Type, index)
+		if err != nil {
+			return nil, gerror.Wrapf(err, "重新下载媒体失败 url:%s", abbreviateMediaURL(asset.SourceURL))
+		}
+		asset.Filename = filename
+		asset.Data = data
+		asset.Type = resolveQuickMediaType(asset.Type, filename, data, contentType)
+		if asset.Type == noteTypeVideo {
+			asset.Thumbnail = buildQuickVideoThumbnail(ctx, data, filename)
+		}
+		out = append(out, asset)
+	}
+	return out, nil
+}
+
+func prepareQuickMediaGroupForTelegram(ctx context.Context, assets []quickMediaAsset) ([]quickMediaAsset, error) {
+	if len(assets) == 0 {
+		return assets, nil
+	}
+	out := append([]quickMediaAsset(nil), assets...)
+	for i, asset := range out {
+		if asset.Type == noteTypeImage && strings.TrimSpace(asset.TgFileID) == "" && len(asset.Data) > quickPhotoMaxBytes {
+			name, data, err := compressQuickPhotoForTelegram(asset.Data)
+			if err != nil {
+				return nil, gerror.Wrap(err, "图片超过 Telegram 限制且压缩失败")
+			}
+			out[i].Filename = quickCompressedMediaFilename(asset.Filename, name)
+			out[i].Data = data
+		}
+	}
+	total := quickMediaChunkUploadBytes(out)
+	if total <= quickMediaGroupMaxUploadBytes {
+		return out, nil
+	}
+	videoIndexes := make([]int, 0)
+	fixedBytes := 0
+	for i, asset := range out {
+		if strings.TrimSpace(asset.TgFileID) != "" {
+			continue
+		}
+		if asset.Type == noteTypeVideo {
+			videoIndexes = append(videoIndexes, i)
+			continue
+		}
+		fixedBytes += len(asset.Data)
+	}
+	if len(videoIndexes) == 0 {
+		return nil, gerror.Newf("媒体组上传体积过大且没有可压缩视频 total:%d limit:%d", total, quickMediaGroupMaxUploadBytes)
+	}
+	remaining := quickMediaGroupTargetBytes - fixedBytes
+	if remaining <= len(videoIndexes)*512*1024 {
+		return nil, gerror.Newf("媒体组图片体积过大，无法为视频保留压缩空间 fixed:%d target:%d", fixedBytes, quickMediaGroupTargetBytes)
+	}
+	perVideoTarget := remaining / len(videoIndexes)
+	for _, index := range videoIndexes {
+		compressed, err := compressQuickVideoForTelegram(ctx, out[index], perVideoTarget)
+		if err != nil {
+			return nil, gerror.Wrapf(err, "视频压缩失败 index:%d", index)
+		}
+		out[index] = compressed
+	}
+	if total = quickMediaChunkUploadBytes(out); total > quickMediaGroupMaxUploadBytes {
+		return nil, gerror.Newf("媒体组压缩后仍过大 total:%d limit:%d", total, quickMediaGroupMaxUploadBytes)
+	}
+	g.Log().Debugf(ctx, "%s 媒体组压缩完成 before:%d after:%d", pullTraceTag(ctx), quickMediaChunkUploadBytes(assets), total)
+	return out, nil
 }
 
 func splitQuickMediaAssetsWithMode(assets []quickMediaAsset, mergeGroup bool) [][]quickMediaAsset {
@@ -1067,6 +1274,28 @@ func updateTelegramFileID(ctx context.Context, sourceURL, fileID string) {
 		itemCols.UpdatedAt: now,
 	}).Update(); err != nil {
 		g.Log().Warningf(ctx, "更新笔记项 Telegram file_id 失败 url:%s err:%+v", sourceURL, err)
+	}
+}
+
+func clearTelegramFileID(ctx context.Context, sourceURL string) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		return
+	}
+	now := gtime.Now()
+	assetCols := dao.AddonLazysheepTggoNoteAsset.Columns()
+	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Where(assetCols.SourceUrl, sourceURL).Data(g.Map{
+		assetCols.TgFileId:  "",
+		assetCols.UpdatedAt: now,
+	}).Update(); err != nil {
+		g.Log().Warningf(ctx, "清理笔记资源 Telegram file_id 失败 url:%s err:%+v", sourceURL, err)
+	}
+	itemCols := dao.AddonLazysheepTggoNoteItem.Columns()
+	if _, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Where(itemCols.Content, sourceURL).Data(g.Map{
+		itemCols.TgFileId:  "",
+		itemCols.UpdatedAt: now,
+	}).Update(); err != nil {
+		g.Log().Warningf(ctx, "清理笔记项 Telegram file_id 失败 url:%s err:%+v", sourceURL, err)
 	}
 }
 

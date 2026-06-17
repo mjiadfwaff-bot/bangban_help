@@ -32,6 +32,7 @@ const (
 	pushTaskStatusDone    = 3
 	pushTaskStatusRetry   = 4
 	pushTaskStatusDead    = 5
+	pushTaskStatusUnknown = 6
 	pushTaskMaxAttempts   = 5
 	pushRetryScanLimit    = 50
 	pushReadyScanLimit    = 200
@@ -265,6 +266,7 @@ func (s *sLazySheepTGGo) fillPushQueueChannels(ctx context.Context, res *lsysin.
 		Retry      int         `json:"retry" orm:"retry"`
 		Done       int         `json:"done" orm:"done"`
 		Dead       int         `json:"dead" orm:"dead"`
+		Unknown    int         `json:"unknown" orm:"unknown"`
 		Backlog    int         `json:"backlog" orm:"backlog"`
 		LastError  string      `json:"lastError" orm:"last_error"`
 		OldestAt   *gtime.Time `json:"oldestAt" orm:"oldest_at"`
@@ -276,6 +278,7 @@ func (s *sLazySheepTGGo) fillPushQueueChannels(ctx context.Context, res *lsysin.
 			"SUM(CASE WHEN status=3 THEN 1 ELSE 0 END) AS done," +
 			"SUM(CASE WHEN status=4 THEN 1 ELSE 0 END) AS retry," +
 			"SUM(CASE WHEN status=5 THEN 1 ELSE 0 END) AS dead," +
+			"SUM(CASE WHEN status=6 THEN 1 ELSE 0 END) AS unknown," +
 			"SUM(CASE WHEN status IN (1,2,4) THEN 1 ELSE 0 END) AS backlog," +
 			"MAX(last_error) AS last_error,MIN(created_at) AS oldest_at").
 		Group("bot_key,binding_key,chat_id").
@@ -295,6 +298,7 @@ func (s *sLazySheepTGGo) fillPushQueueChannels(ctx context.Context, res *lsysin.
 			Retry:      row.Retry,
 			Done:       row.Done,
 			Dead:       row.Dead,
+			Unknown:    row.Unknown,
 			Backlog:    row.Backlog,
 			LastError:  limitPushLogError(row.LastError),
 			OldestAt:   formatPushQueueTime(row.OldestAt),
@@ -646,10 +650,11 @@ func (s *sLazySheepTGGo) pushDedupSeen(ctx context.Context, botKey, bindingKey s
 		return false, err
 	}
 	var row *struct {
-		Status int `json:"status" orm:"status"`
+		Status int   `json:"status" orm:"status"`
+		TaskID int64 `json:"taskId" orm:"task_id"`
 	}
 	if err := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
-		Fields("status").
+		Fields("status,task_id").
 		Where("bot_key", botKey).
 		Where("chat_id", chatID).
 		Where("fingerprint", fingerprint).
@@ -661,6 +666,15 @@ func (s *sLazySheepTGGo) pushDedupSeen(ctx context.Context, botKey, bindingKey s
 	if row != nil && row.Status == pushDedupStatusDone {
 		_ = cache.Instance().Set(ctx, cacheKey, "done", pushDedupTTL)
 		return true, nil
+	}
+	if row != nil && row.Status == pushDedupStatusHold {
+		released, releaseErr := s.releaseDeadPushDedupHold(ctx, botKey, chatID, fingerprint, row.TaskID)
+		if releaseErr != nil {
+			return false, releaseErr
+		}
+		if released {
+			return false, nil
+		}
 	}
 	return row != nil, nil
 }
@@ -698,17 +712,27 @@ func (s *sLazySheepTGGo) pushDedupReserve(ctx context.Context, botKey, bindingKe
 	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").Data(data).Insert(); err != nil {
 		if isDuplicateKeyError(err) {
 			var row *struct {
-				Status int `json:"status" orm:"status"`
+				Status int   `json:"status" orm:"status"`
+				TaskID int64 `json:"taskId" orm:"task_id"`
 			}
 			if scanErr := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
-				Fields("status").
+				Fields("status,task_id").
 				Where("bot_key", botKey).
 				Where("chat_id", chatID).
 				Where("fingerprint", fingerprint).
 				Scan(&row); scanErr != nil {
 				return false, gerror.Wrap(scanErr, "查询推送去重状态失败")
 			}
-			if row != nil && row.Status == pushDedupStatusFailed {
+			if row != nil && row.Status == pushDedupStatusHold {
+				released, releaseErr := s.releaseDeadPushDedupHold(ctx, botKey, chatID, fingerprint, row.TaskID)
+				if releaseErr != nil {
+					return false, releaseErr
+				}
+				if !released {
+					return false, nil
+				}
+			}
+			if row != nil && (row.Status == pushDedupStatusFailed || row.Status == pushDedupStatusHold) {
 				_, updateErr := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
 					Where("bot_key", botKey).
 					Where("chat_id", chatID).
@@ -727,6 +751,33 @@ func (s *sLazySheepTGGo) pushDedupReserve(ctx context.Context, botKey, bindingKe
 			return false, nil
 		}
 		return false, gerror.Wrap(err, "写入推送去重记录失败")
+	}
+	_, _ = cache.Instance().Remove(ctx, pushDedupKey(botKey, chatID, fingerprint))
+	return true, nil
+}
+
+func (s *sLazySheepTGGo) releaseDeadPushDedupHold(ctx context.Context, botKey string, chatID int64, fingerprint string, taskID int64) (bool, error) {
+	if strings.TrimSpace(botKey) == "" || chatID == 0 || strings.TrimSpace(fingerprint) == "" || taskID <= 0 {
+		return false, nil
+	}
+	count, err := g.DB().Model("hg_addon_lazysheep_tggo_push_queue").
+		Where("id", taskID).
+		Where("status", pushTaskStatusDead).
+		Count()
+	if err != nil {
+		return false, gerror.Wrap(err, "查询推送死信任务失败")
+	}
+	if count == 0 {
+		return false, nil
+	}
+	if _, err = g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+		Where("bot_key", botKey).
+		Where("chat_id", chatID).
+		Where("fingerprint", fingerprint).
+		Where("status", pushDedupStatusHold).
+		Data(g.Map{"status": pushDedupStatusFailed, "updated_at": gtime.Now()}).
+		Update(); err != nil {
+		return false, gerror.Wrap(err, "释放死信推送去重占位失败")
 	}
 	_, _ = cache.Instance().Remove(ctx, pushDedupKey(botKey, chatID, fingerprint))
 	return true, nil
@@ -1314,7 +1365,7 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	if err != nil {
 		return err
 	}
-	if record == nil || record.Status == pushTaskStatusDone || record.Status == pushTaskStatusDead {
+	if record == nil || record.Status == pushTaskStatusDone || record.Status == pushTaskStatusDead || record.Status == pushTaskStatusUnknown {
 		return nil
 	}
 	if record.Status != pushTaskStatusReady && record.Status != pushTaskStatusRetry {
@@ -1361,7 +1412,7 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	if err != nil {
 		return err
 	}
-	if record == nil || record.Status == pushTaskStatusDead {
+	if record == nil || record.Status == pushTaskStatusDead || record.Status == pushTaskStatusUnknown {
 		return nil
 	}
 	if seen, err := s.pushDedupSeenForTask(ctx, task); err != nil {
@@ -1393,7 +1444,7 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 	if isAmbiguousTelegramSendError(pushErr) {
 		errText = "Telegram 发送结果未知，已停止自动重试以避免重复推送：" + errText
 		_, _ = g.DB().Model("hg_addon_lazysheep_tggo_push_queue").WherePri(task.TaskID).Data(g.Map{
-			"status":      pushTaskStatusDead,
+			"status":      pushTaskStatusUnknown,
 			"last_error":  errText,
 			"finished_at": gtime.Now(),
 			"updated_at":  gtime.Now(),
@@ -1738,6 +1789,8 @@ func pushQueueStatusLabel(status int) string {
 		return "重试中"
 	case pushTaskStatusDead:
 		return "失败"
+	case pushTaskStatusUnknown:
+		return "待确认"
 	default:
 		return "未知"
 	}

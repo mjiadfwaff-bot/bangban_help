@@ -324,6 +324,7 @@
     { title: '待推送', key: 'ready', width: 90 },
     { title: '推送中', key: 'doing', width: 90 },
     { title: '重试中', key: 'retry', width: 90 },
+    { title: '待确认', key: 'unknown', width: 90 },
     { title: '失败', key: 'dead', width: 80 },
     { title: '积压', key: 'backlog', width: 80 },
     { title: '最早任务', key: 'oldestAt', width: 160 },

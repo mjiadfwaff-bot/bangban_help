@@ -403,7 +403,7 @@ func (s *sLazySheepTGGo) ensurePushQueueTable(ctx context.Context) error {
 			"`note_id` BIGINT NOT NULL DEFAULT 0 COMMENT '笔记ID',"+
 			"`content_id` BIGINT NOT NULL DEFAULT 0 COMMENT '内容ID',"+
 			"`chat_id` BIGINT NOT NULL DEFAULT 0 COMMENT '目标会话ID',"+
-			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1待推送 2执行中 3成功 4重试中 5失败',"+
+			"`status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态:1待推送 2执行中 3成功 4重试中 5失败 6待确认',"+
 			"`attempts` INT NOT NULL DEFAULT 0 COMMENT '已尝试次数',"+
 			"`max_attempts` INT NOT NULL DEFAULT 5 COMMENT '最大尝试次数',"+
 			"`last_error` TEXT COMMENT '最近错误',"+

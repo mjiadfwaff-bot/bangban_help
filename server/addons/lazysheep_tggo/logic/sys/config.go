@@ -408,7 +408,7 @@ pullLocked:
 			g.Log().Debugf(ctx, "采集处理笔记 botKey:%s binding:%s page:%d index:%d contentID:%s autoPush:%t", in.BotKey, binding.Key, page.Page, idx+1, msg.ContentId, binding.AutoPush)
 			contentID := parseInt(msg.ContentId)
 			cursorID := parseInt(msg.Id)
-			if !in.Retry && isOldBangchatMessage(binding, cursorID, contentID) {
+			if !in.Retry && !in.Sync && isOldBangchatMessage(binding, cursorID, contentID) {
 				summary.Skipped++
 				summary.OldCursorSkipped++
 				timer.Report("跳过旧笔记 contentID:%s cursor:%s。", msg.ContentId, msg.Id)

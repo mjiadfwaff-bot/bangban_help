@@ -56,6 +56,7 @@
     { label: '正常', value: 'normal' },
     { label: '正在同步', value: 'running' },
     { label: '等待推送', value: 'pending' },
+    { label: '待确认', value: 'unknown' },
     { label: '存在失败', value: 'failed' },
     { label: '自动拉取关闭', value: 'paused' },
     { label: '已停用', value: 'disabled' },

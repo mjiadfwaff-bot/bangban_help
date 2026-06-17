@@ -29,6 +29,7 @@ type channelQueueCount struct {
 	Retry      int    `json:"retry" orm:"retry"`
 	Done       int    `json:"done" orm:"done"`
 	Dead       int    `json:"dead" orm:"dead"`
+	Unknown    int    `json:"unknown" orm:"unknown"`
 	LastError  string `json:"lastError" orm:"last_error"`
 }
 
@@ -86,6 +87,7 @@ func (s *sLazySheepTGGo) ChannelList(ctx context.Context, in *lsysin.ChannelList
 			item.Retry = queue.Retry
 			item.Done = queue.Done
 			item.Dead = queue.Dead
+			item.Unknown = queue.Unknown
 			item.LastError = queue.LastError
 		}
 		fillChannelWorkStatus(item)
@@ -128,6 +130,7 @@ func (s *sLazySheepTGGo) channelQueueCounts(ctx context.Context) (map[string]*ch
 			"SUM(CASE WHEN status=4 THEN 1 ELSE 0 END) retry," +
 			"SUM(CASE WHEN status=3 THEN 1 ELSE 0 END) done," +
 			"SUM(CASE WHEN status=5 THEN 1 ELSE 0 END) dead," +
+			"SUM(CASE WHEN status=6 THEN 1 ELSE 0 END) unknown," +
 			"MAX(last_error) last_error").
 		Group("binding_key,chat_id").
 		Scan(&rows)
@@ -198,6 +201,9 @@ func fillChannelWorkStatus(item *lsysin.ChannelListItem) {
 	case item.Pending+item.Retry > 0:
 		item.WorkStatus = "等待推送"
 		item.WorkStatusType = "pending"
+	case item.Unknown > 0:
+		item.WorkStatus = "待确认"
+		item.WorkStatusType = "unknown"
 	case item.Dead > 0:
 		item.WorkStatus = "存在失败"
 		item.WorkStatusType = "failed"

@@ -204,6 +204,7 @@ type PushQueueChannelModel struct {
 	Retry      int    `json:"retry"`
 	Done       int    `json:"done"`
 	Dead       int    `json:"dead"`
+	Unknown    int    `json:"unknown"`
 	Backlog    int    `json:"backlog"`
 	LastError  string `json:"lastError"`
 	OldestAt   string `json:"oldestAt"`
@@ -296,6 +297,7 @@ type ChannelListItem struct {
 	Retry              int    `json:"retry"`
 	Done               int    `json:"done"`
 	Dead               int    `json:"dead"`
+	Unknown            int    `json:"unknown"`
 	LastError          string `json:"lastError"`
 }
 
