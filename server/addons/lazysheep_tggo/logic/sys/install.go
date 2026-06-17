@@ -118,6 +118,9 @@ func (s *sLazySheepTGGo) ensureNoteTables(ctx context.Context) error {
 	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_note"); err != nil || !ok {
 		return err
 	}
+	if err := s.ensureNoteItemLongTextFields(ctx); err != nil {
+		return err
+	}
 	switch g.DB().GetConfig().Type {
 	case consts.DBPgsql:
 		if _, err := g.DB().Exec(ctx, "DROP INDEX IF EXISTS hg_addon_lazysheep_tggo_note_content_id"); err != nil {
@@ -180,6 +183,61 @@ func (s *sLazySheepTGGo) ensureNoteTables(ctx context.Context) error {
 	}
 	if err = dbinit.ImportFile(ctx, sqlPath); err != nil {
 		return gerror.Wrap(err, "初始化笔记资源表失败")
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) ensureNoteItemLongTextFields(ctx context.Context) error {
+	if ok, err := dbinit.HasTable(ctx, "hg_addon_lazysheep_tggo_note_item"); err != nil || !ok {
+		return err
+	}
+	switch g.DB().GetConfig().Type {
+	case consts.DBPgsql:
+		if ok, err := pgsqlColumnIsText(ctx, "hg_addon_lazysheep_tggo_note_item", "title"); err != nil {
+			return gerror.Wrap(err, "检查笔记项标题字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_note_item ALTER COLUMN title TYPE text"); err != nil {
+				return gerror.Wrap(err, "更新笔记项标题字段失败")
+			}
+		}
+		if ok, err := pgsqlColumnIsText(ctx, "hg_addon_lazysheep_tggo_note_item", "sub_title"); err != nil {
+			return gerror.Wrap(err, "检查笔记项副标题字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_note_item ALTER COLUMN sub_title TYPE text"); err != nil {
+				return gerror.Wrap(err, "更新笔记项副标题字段失败")
+			}
+		}
+		if ok, err := pgsqlColumnIsText(ctx, "hg_addon_lazysheep_tggo_note_item", "content"); err != nil {
+			return gerror.Wrap(err, "检查笔记项内容字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE hg_addon_lazysheep_tggo_note_item ALTER COLUMN content TYPE text"); err != nil {
+				return gerror.Wrap(err, "更新笔记项内容字段失败")
+			}
+		}
+	case consts.DBMysql, "":
+		if ok, err := mysqlColumnIsOneOf(ctx, "hg_addon_lazysheep_tggo_note_item", "title", "text", "mediumtext", "longtext"); err != nil {
+			return gerror.Wrap(err, "检查笔记项标题字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note_item` MODIFY COLUMN `title` TEXT COMMENT '标题'"); err != nil {
+				return gerror.Wrap(err, "更新笔记项标题字段失败")
+			}
+		}
+		if ok, err := mysqlColumnIsOneOf(ctx, "hg_addon_lazysheep_tggo_note_item", "sub_title", "text", "mediumtext", "longtext"); err != nil {
+			return gerror.Wrap(err, "检查笔记项副标题字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note_item` MODIFY COLUMN `sub_title` TEXT COMMENT '副标题'"); err != nil {
+				return gerror.Wrap(err, "更新笔记项副标题字段失败")
+			}
+		}
+		if ok, err := mysqlColumnIsOneOf(ctx, "hg_addon_lazysheep_tggo_note_item", "content", "longtext"); err != nil {
+			return gerror.Wrap(err, "检查笔记项内容字段失败")
+		} else if !ok {
+			if _, err := g.DB().Exec(ctx, "ALTER TABLE `hg_addon_lazysheep_tggo_note_item` MODIFY COLUMN `content` LONGTEXT COMMENT '内容'"); err != nil {
+				return gerror.Wrap(err, "更新笔记项内容字段失败")
+			}
+		}
+	default:
+		return nil
 	}
 	return nil
 }
@@ -873,6 +931,39 @@ func mysqlHasIndex(ctx context.Context, table, index string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func mysqlColumnIsOneOf(ctx context.Context, table, column string, types ...string) (bool, error) {
+	if len(types) == 0 {
+		return false, nil
+	}
+	value, err := g.DB().GetValue(ctx, `
+		SELECT DATA_TYPE FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+		LIMIT 1
+	`, table, column)
+	if err != nil || value.IsNil() {
+		return false, err
+	}
+	current := strings.ToLower(strings.TrimSpace(value.String()))
+	for _, item := range types {
+		if current == strings.ToLower(strings.TrimSpace(item)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func pgsqlColumnIsText(ctx context.Context, table, column string) (bool, error) {
+	value, err := g.DB().GetValue(ctx, `
+		SELECT data_type FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?
+		LIMIT 1
+	`, table, column)
+	if err != nil || value.IsNil() {
+		return false, err
+	}
+	return strings.EqualFold(strings.TrimSpace(value.String()), "text"), nil
 }
 
 func isDuplicateColumnError(err error) bool {

@@ -146,6 +146,15 @@ func Pull(ctx context.Context, opt PullOption) (*PullResult, error) {
 	}
 	messages, err := session.Client.CollectMessages(ctx, session.PairID, opt.Limit, opt.MaxPages)
 	if err != nil {
+		if isBangChatAuthExpiredError(err) && clearResolvedToken(ctx, opt.URL) {
+			session, retryErr := OpenSession(ctx, opt.URL)
+			if retryErr == nil {
+				messages, retryErr = session.Client.CollectMessages(ctx, session.PairID, opt.Limit, opt.MaxPages)
+			}
+			if retryErr == nil {
+				return &PullResult{PairID: session.PairID, Messages: messages}, nil
+			}
+		}
 		return nil, err
 	}
 	return &PullResult{PairID: session.PairID, Messages: messages}, nil
@@ -162,13 +171,30 @@ func PullPages(ctx context.Context, opt PullOption, handle func(*PullPage) error
 	if err != nil {
 		return "", err
 	}
+	handledAny := false
 	if err = session.Client.CollectMessagePages(ctx, session.PairID, opt.Limit, opt.MaxPages, opt.PageSize, func(page int, messages []json.RawMessage) error {
+		handledAny = true
 		return handle(&PullPage{
 			PairID:   session.PairID,
 			Page:     page,
 			Messages: messages,
 		})
 	}); err != nil {
+		if !handledAny && isBangChatAuthExpiredError(err) && clearResolvedToken(ctx, opt.URL) {
+			session, retryErr := OpenSession(ctx, opt.URL)
+			if retryErr == nil {
+				retryErr = session.Client.CollectMessagePages(ctx, session.PairID, opt.Limit, opt.MaxPages, opt.PageSize, func(page int, messages []json.RawMessage) error {
+					return handle(&PullPage{
+						PairID:   session.PairID,
+						Page:     page,
+						Messages: messages,
+					})
+				})
+			}
+			if retryErr == nil {
+				return session.PairID, nil
+			}
+		}
 		return "", err
 	}
 	return session.PairID, nil
@@ -255,6 +281,34 @@ func saveResolvedToken(ctx context.Context, key, token string) {
 		_ = recover()
 	}()
 	_ = cache.Instance().Set(ctx, key, strings.TrimSpace(token), time.Hour*24)
+}
+
+func clearResolvedToken(ctx context.Context, input string) bool {
+	input = strings.TrimSpace(input)
+	u, err := url.Parse(input)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	key := resolveTokenCacheKey(u)
+	if key == "" {
+		return false
+	}
+	defer func() {
+		_ = recover()
+	}()
+	_, _ = cache.Instance().Remove(ctx, key)
+	return true
+}
+
+func isBangChatAuthExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "user no login") ||
+		strings.Contains(text, "not login") ||
+		strings.Contains(text, "unauthorized") ||
+		strings.Contains(text, "401")
 }
 
 func NewClient(ctx context.Context) (*Client, error) {
