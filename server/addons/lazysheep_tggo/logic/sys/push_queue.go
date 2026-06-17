@@ -26,23 +26,26 @@ import (
 )
 
 const (
-	pushNoteTopic        = "lazysheep_tggo:push_note"
-	pushTaskStatusReady  = 1
-	pushTaskStatusDoing  = 2
-	pushTaskStatusDone   = 3
-	pushTaskStatusRetry  = 4
-	pushTaskStatusDead   = 5
-	pushTaskMaxAttempts  = 5
-	pushRetryScanLimit   = 50
-	pushReadyScanLimit   = 200
-	pushGlobalWorkers    = 24
-	pushChatInterval     = 10 * time.Second
-	pushDoingTimeout     = 15 * time.Minute
-	pushLogStatusSuccess = 1
-	pushLogStatusFailed  = 2
-	pushLogStatusSkipped = 3
-	pushDedupTTL         = 180 * 24 * time.Hour
-	pushQueuePausedKey   = "lazysheep_tggo:push_queue:paused"
+	pushNoteTopic         = "lazysheep_tggo:push_note"
+	pushTaskStatusReady   = 1
+	pushTaskStatusDoing   = 2
+	pushTaskStatusDone    = 3
+	pushTaskStatusRetry   = 4
+	pushTaskStatusDead    = 5
+	pushTaskMaxAttempts   = 5
+	pushRetryScanLimit    = 50
+	pushReadyScanLimit    = 200
+	pushGlobalWorkers     = 24
+	pushChatInterval      = 10 * time.Second
+	pushDoingTimeout      = 15 * time.Minute
+	pushLogStatusSuccess  = 1
+	pushLogStatusFailed   = 2
+	pushLogStatusSkipped  = 3
+	pushDedupStatusHold   = 1
+	pushDedupStatusDone   = 2
+	pushDedupStatusFailed = 3
+	pushDedupTTL          = 180 * 24 * time.Hour
+	pushQueuePausedKey    = "lazysheep_tggo:push_queue:paused"
 )
 
 var (
@@ -631,27 +634,35 @@ func (s *sLazySheepTGGo) pushDedupSeen(ctx context.Context, botKey, bindingKey s
 	if botKey == "" || chatID == 0 || fingerprint == "" {
 		return false, nil
 	}
-	if val, err := cache.Instance().Get(ctx, pushDedupKey(botKey, chatID, fingerprint)); err != nil {
+	cacheKey := pushDedupKey(botKey, chatID, fingerprint)
+	if val, err := cache.Instance().Get(ctx, cacheKey); err != nil {
 		return false, gerror.Wrap(err, "查询推送去重缓存失败")
-	} else if !val.IsNil() && val.String() != "" {
+	} else if !val.IsNil() && val.String() == "done" {
 		return true, nil
+	} else if !val.IsNil() && val.String() != "" {
+		_, _ = cache.Instance().Remove(ctx, cacheKey)
 	}
 	if err := s.ensurePushDedupTable(ctx); err != nil {
 		return false, err
 	}
-	count, err := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+	var row *struct {
+		Status int `json:"status" orm:"status"`
+	}
+	if err := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+		Fields("status").
 		Where("bot_key", botKey).
 		Where("chat_id", chatID).
 		Where("fingerprint", fingerprint).
-		Count()
-	if err != nil {
+		WhereIn("status", []int{pushDedupStatusHold, pushDedupStatusDone}).
+		OrderDesc("updated_at").
+		Scan(&row); err != nil {
 		return false, gerror.Wrap(err, "查询推送去重记录失败")
 	}
-	if count > 0 {
-		_ = cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
+	if row != nil && row.Status == pushDedupStatusDone {
+		_ = cache.Instance().Set(ctx, cacheKey, "done", pushDedupTTL)
 		return true, nil
 	}
-	return false, nil
+	return row != nil, nil
 }
 
 func (s *sLazySheepTGGo) pushDedupSeenAny(ctx context.Context, botKey, bindingKey string, chatID int64, fingerprints []string) (bool, error) {
@@ -680,18 +691,45 @@ func (s *sLazySheepTGGo) pushDedupReserve(ctx context.Context, botKey, bindingKe
 		"content_id":  contentID,
 		"fingerprint": fingerprint,
 		"task_id":     0,
-		"status":      1,
+		"status":      pushDedupStatusHold,
 		"created_at":  now,
 		"updated_at":  now,
 	}
 	if _, err := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").Data(data).Insert(); err != nil {
 		if isDuplicateKeyError(err) {
-			_ = cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
+			var row *struct {
+				Status int `json:"status" orm:"status"`
+			}
+			if scanErr := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+				Fields("status").
+				Where("bot_key", botKey).
+				Where("chat_id", chatID).
+				Where("fingerprint", fingerprint).
+				Scan(&row); scanErr != nil {
+				return false, gerror.Wrap(scanErr, "查询推送去重状态失败")
+			}
+			if row != nil && row.Status == pushDedupStatusFailed {
+				_, updateErr := g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+					Where("bot_key", botKey).
+					Where("chat_id", chatID).
+					Where("fingerprint", fingerprint).
+					Data(data).
+					Update()
+				if updateErr != nil {
+					return false, gerror.Wrap(updateErr, "更新失败推送去重记录失败")
+				}
+				_, _ = cache.Instance().Remove(ctx, pushDedupKey(botKey, chatID, fingerprint))
+				return true, nil
+			}
+			if row != nil && row.Status == pushDedupStatusDone {
+				_ = cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "done", pushDedupTTL)
+			}
 			return false, nil
 		}
 		return false, gerror.Wrap(err, "写入推送去重记录失败")
 	}
-	return true, cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
+	_, _ = cache.Instance().Remove(ctx, pushDedupKey(botKey, chatID, fingerprint))
+	return true, nil
 }
 
 func (s *sLazySheepTGGo) pushDedupReserveAny(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprints []string) (bool, error) {
@@ -750,7 +788,11 @@ func (s *sLazySheepTGGo) pushDedupRemember(ctx context.Context, botKey, bindingK
 			return gerror.Wrap(err, "写入推送去重记录失败")
 		}
 	}
-	return cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "1", pushDedupTTL)
+	if status == pushDedupStatusDone {
+		return cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "done", pushDedupTTL)
+	}
+	_, err = cache.Instance().Remove(ctx, pushDedupKey(botKey, chatID, fingerprint))
+	return err
 }
 
 func (s *sLazySheepTGGo) pushDedupRememberAny(ctx context.Context, botKey, bindingKey string, chatID int64, noteID, contentID int64, fingerprints []string, taskID int64, status int) error {
@@ -774,9 +816,42 @@ func (s *sLazySheepTGGo) pushDedupMarkDone(ctx context.Context, botKey string, c
 		Where("bot_key", botKey).
 		Where("chat_id", chatID).
 		WhereIn("fingerprint", uniquePushFingerprints(fingerprints)).
-		Data(g.Map{"status": 2, "updated_at": gtime.Now()}).
+		Data(g.Map{"status": pushDedupStatusDone, "updated_at": gtime.Now()}).
 		Update()
-	return err
+	if err != nil {
+		return err
+	}
+	for _, fingerprint := range uniquePushFingerprints(fingerprints) {
+		_ = cache.Instance().Set(ctx, pushDedupKey(botKey, chatID, fingerprint), "done", pushDedupTTL)
+	}
+	return nil
+}
+
+func (s *sLazySheepTGGo) pushDedupMarkFailed(ctx context.Context, task *lsysin.PushNoteTask) error {
+	if task == nil || task.BotKey == "" || task.ChatID == 0 {
+		return nil
+	}
+	fingerprints, err := s.pushDedupFingerprints(ctx, task.ContentID, task.NoteID)
+	if err != nil {
+		return err
+	}
+	fingerprints = uniquePushFingerprints(fingerprints)
+	if len(fingerprints) == 0 {
+		return nil
+	}
+	if _, err = g.DB().Model("hg_addon_lazysheep_tggo_push_dedup").
+		Where("bot_key", task.BotKey).
+		Where("chat_id", task.ChatID).
+		WhereIn("fingerprint", fingerprints).
+		Where("status !=", pushDedupStatusDone).
+		Data(g.Map{"status": pushDedupStatusFailed, "updated_at": gtime.Now()}).
+		Update(); err != nil {
+		return gerror.Wrap(err, "标记推送去重失败状态失败")
+	}
+	for _, fingerprint := range fingerprints {
+		_, _ = cache.Instance().Remove(ctx, pushDedupKey(task.BotKey, task.ChatID, fingerprint))
+	}
+	return nil
 }
 
 func recordPushTaskLog(ctx context.Context, task *lsysin.PushNoteTask, status int, attempt int, elapsedMs int64, messageID int, errText string) {
@@ -996,6 +1071,13 @@ func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context
 		if keepByPushFingerprint {
 			continue
 		}
+		hasPending, pendingErr := s.noteHasUnfinishedPushTask(ctx, botKey, binding.Key, targetChatID, row.Id)
+		if pendingErr != nil {
+			return 0, 0, 0, pendingErr
+		}
+		if hasPending {
+			continue
+		}
 		removeNoteIDs = append(removeNoteIDs, row.Id)
 	}
 	if len(removeNoteIDs) == 0 {
@@ -1009,6 +1091,23 @@ func (s *sLazySheepTGGo) deleteBindingNotesNotInFingerprints(ctx context.Context
 		return 0, deletedMessages, failedMessages, err
 	}
 	return len(removeNoteIDs), deletedMessages, failedMessages, nil
+}
+
+func (s *sLazySheepTGGo) noteHasUnfinishedPushTask(ctx context.Context, botKey, bindingKey string, chatID int64, noteID int64) (bool, error) {
+	if strings.TrimSpace(botKey) == "" || strings.TrimSpace(bindingKey) == "" || chatID == 0 || noteID <= 0 {
+		return false, nil
+	}
+	count, err := g.DB().Model("hg_addon_lazysheep_tggo_push_queue").
+		Where("bot_key", botKey).
+		Where("binding_key", bindingKey).
+		Where("chat_id", chatID).
+		Where("note_id", noteID).
+		WhereIn("status", []int{pushTaskStatusReady, pushTaskStatusDoing, pushTaskStatusRetry, pushTaskStatusDead}).
+		Count()
+	if err != nil {
+		return false, gerror.Wrap(err, "查询笔记推送任务状态失败")
+	}
+	return count > 0, nil
 }
 
 func (s *sLazySheepTGGo) noteURLFingerprintByNoteID(ctx context.Context, noteID int64) (string, error) {
@@ -1311,6 +1410,9 @@ func (s *sLazySheepTGGo) HandlePushNoteTask(ctx context.Context, task *lsysin.Pu
 			"finished_at": gtime.Now(),
 			"updated_at":  gtime.Now(),
 		}).Update()
+		if err := s.pushDedupMarkFailed(ctx, task); err != nil {
+			g.Log().Warningf(ctx, "释放失败推送去重占位失败 task:%d err:%+v", task.TaskID, err)
+		}
 		recordPushTaskLog(ctx, task, pushLogStatusFailed, attempt, elapsed.Milliseconds(), 0, errText)
 		recordPushQueueMonitorEvent(ctx, task, false, errText, elapsed)
 		return pushErr
