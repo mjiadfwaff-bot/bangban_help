@@ -84,12 +84,67 @@ func TestSelectQuickMediaItemsForPushMergesUnmarkedVideo(t *testing.T) {
 	if len(selected) != len(items) {
 		t.Fatalf("expected all media to be kept, got %d", len(selected))
 	}
-	if selected[2].Type != noteTypeVideo || !selected[2].VerifyVideo {
-		t.Fatalf("expected unmarked video to be treated as verify video, got %#v", selected[2])
+	if selected[2].Type != noteTypeVideo || selected[2].VerifyVideo {
+		t.Fatalf("expected unmarked video to stay as normal video, got %#v", selected[2])
 	}
 }
 
-func TestSelectQuickMediaItemsForPushKeepsEightImagesAndTwoVideos(t *testing.T) {
+func TestSelectQuickMediaItemsForPushKeepsTenMediaIncludingNormalAndVerifyVideo(t *testing.T) {
+	items := make([]noteItem, 0, 10)
+	for i := 0; i < 8; i++ {
+		items = append(items, noteItem{Type: noteTypeImage, Content: fmt.Sprintf("https://img.example/%02d.jpg", i)})
+	}
+	items = append(items,
+		noteItem{Type: noteTypeVideo, Content: "https://img.example/normal-1.mp4"},
+		noteItem{Type: noteTypeVideo, Content: "https://img.example/verify-1.mp4", VerifyVideo: true},
+	)
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": true})
+	if !merged {
+		t.Fatal("expected verify video to be merged into media group")
+	}
+	if len(selected) != quickMediaGroupLimit {
+		t.Fatalf("expected %d media items, got %d", quickMediaGroupLimit, len(selected))
+	}
+	if selected[8].Content != "https://img.example/normal-1.mp4" || selected[9].Content != "https://img.example/verify-1.mp4" {
+		t.Fatalf("expected normal and verify videos to be kept, got %#v", selected[8:])
+	}
+}
+
+func TestSelectQuickMediaItemsForPushPrefersThreeVerifyVideosAndOneNormalVideo(t *testing.T) {
+	items := make([]noteItem, 0, 12)
+	for i := 0; i < 6; i++ {
+		items = append(items, noteItem{Type: noteTypeImage, Content: fmt.Sprintf("https://img.example/%02d.jpg", i)})
+	}
+	for i := 0; i < 3; i++ {
+		items = append(items, noteItem{Type: noteTypeVideo, Content: fmt.Sprintf("https://img.example/normal-%d.mp4", i)})
+	}
+	for i := 0; i < 3; i++ {
+		items = append(items, noteItem{Type: noteTypeVideo, Content: fmt.Sprintf("https://img.example/verify-%d.mp4", i), VerifyVideo: true})
+	}
+	selected, merged := selectQuickMediaItemsForPush(items, map[string]any{"mergeVerifyInGroup": true})
+	if !merged {
+		t.Fatal("expected verify video to be merged into media group")
+	}
+	if len(selected) != quickMediaGroupLimit {
+		t.Fatalf("expected %d media items, got %d", quickMediaGroupLimit, len(selected))
+	}
+	imageCount, normalVideoCount, verifyVideoCount := 0, 0, 0
+	for _, item := range selected {
+		switch {
+		case item.Type == noteTypeImage:
+			imageCount++
+		case item.Type == noteTypeVideo && item.VerifyVideo:
+			verifyVideoCount++
+		case item.Type == noteTypeVideo:
+			normalVideoCount++
+		}
+	}
+	if imageCount != 6 || normalVideoCount != 1 || verifyVideoCount != 3 {
+		t.Fatalf("expected 6 images, 1 normal video, 3 verify videos; got images:%d normal:%d verify:%d selected:%#v", imageCount, normalVideoCount, verifyVideoCount, selected)
+	}
+}
+
+func TestSelectQuickMediaItemsForPushKeepsVerifyVideosWhenOverLimit(t *testing.T) {
 	items := make([]noteItem, 0, 15)
 	for i := 0; i < 12; i++ {
 		items = append(items, noteItem{Type: noteTypeImage, Content: fmt.Sprintf("https://img.example/%02d.jpg", i)})
@@ -106,22 +161,14 @@ func TestSelectQuickMediaItemsForPushKeepsEightImagesAndTwoVideos(t *testing.T) 
 	if len(selected) != quickMediaGroupLimit {
 		t.Fatalf("expected %d media items, got %d", quickMediaGroupLimit, len(selected))
 	}
-	for i := 0; i < quickMergeImageLimit; i++ {
-		if selected[i].Type != noteTypeImage || selected[i].VerifyVideo {
-			t.Fatalf("expected first 8 items to be normal images, got %#v", selected[i])
+	foundVerify := map[string]bool{}
+	for _, item := range selected {
+		if item.Type == noteTypeVideo && item.VerifyVideo {
+			foundVerify[item.Content] = true
 		}
 	}
-	videos := selected[quickMergeImageLimit:]
-	if len(videos) != quickMergeVideoLimit {
-		t.Fatalf("expected %d videos, got %d", quickMergeVideoLimit, len(videos))
-	}
-	for _, item := range videos {
-		if item.Type != noteTypeVideo || !item.VerifyVideo {
-			t.Fatalf("expected verify videos after images, got %#v", item)
-		}
-	}
-	if videos[0].Content != "https://img.example/verify-1.mp4" || videos[1].Content != "https://img.example/verify-2.mp4" {
-		t.Fatalf("expected verify videos to be preferred, got %#v", videos)
+	if !foundVerify["https://img.example/verify-1.mp4"] || !foundVerify["https://img.example/verify-2.mp4"] {
+		t.Fatalf("expected verify videos to be preferred, got %#v", selected)
 	}
 }
 
