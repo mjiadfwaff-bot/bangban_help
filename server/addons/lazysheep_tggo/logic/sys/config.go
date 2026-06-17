@@ -640,7 +640,12 @@ func retryPullAction(ctx context.Context, label string, action func() error) err
 			return err
 		}
 		g.Log().Warningf(ctx, "%s %s 第%d次失败，准备重试 err:%+v", pullTraceTag(ctx), label, attempt, err)
-		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		delay := time.Duration(attempt)*2*time.Second + time.Duration(attempt*137)*time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 	return err
 }
@@ -655,7 +660,13 @@ func isRetriablePullError(err error) bool {
 		strings.Contains(text, "temporarily"),
 		strings.Contains(text, "connection reset"),
 		strings.Contains(text, "eof"),
+		strings.Contains(text, "deadlock"),
+		strings.Contains(text, "lock wait timeout"),
+		strings.Contains(text, "try restarting transaction"),
 		strings.Contains(text, "too many requests"),
+		strings.Contains(text, "1213"),
+		strings.Contains(text, "1205"),
+		strings.Contains(text, "40001"),
 		strings.Contains(text, "429"),
 		strings.Contains(text, "try again"),
 		strings.Contains(text, "deadline exceeded"):
