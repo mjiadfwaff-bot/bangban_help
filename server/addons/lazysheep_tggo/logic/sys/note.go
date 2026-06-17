@@ -13,6 +13,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/encoding/gjson"
@@ -21,6 +22,7 @@ import (
 	"github.com/gogf/gf/v2/net/ghttp"
 	"hotgo/addons/lazysheep_tggo/model/input/sysin"
 	"hotgo/internal/dao"
+	"hotgo/internal/library/hgrds/lock"
 	"hotgo/internal/library/storager"
 	isysin "hotgo/internal/model/input/sysin"
 	isc "hotgo/internal/service"
@@ -98,6 +100,15 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 	if err != nil {
 		return nil, err
 	}
+	noteLock := lock.NewConfig(2*time.Minute, 200*time.Millisecond).Mutex(fmt.Sprintf("lazysheep_tggo:note:store:%s:%d", in.BindingKey, contentID))
+	if err = noteLock.Lock(ctx); err != nil {
+		return nil, gerror.Wrap(err, "等待笔记入库锁失败")
+	}
+	defer func() {
+		if unlockErr := noteLock.Unlock(context.Background()); unlockErr != nil {
+			g.Log().Warningf(ctx, "释放笔记入库锁失败 binding:%s contentID:%d err:%+v", in.BindingKey, contentID, unlockErr)
+		}
+	}()
 
 	err = dao.AddonLazysheepTggoNote.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		noteID, err := s.upsertNoteRow(ctx, &noteStoreRow{
