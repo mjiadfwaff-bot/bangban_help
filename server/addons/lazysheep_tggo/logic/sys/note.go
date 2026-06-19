@@ -165,20 +165,11 @@ func (s *sLazySheepTGGo) prepareNoteItems(ctx context.Context, items []noteItem)
 	}
 	prepared := make([]preparedNoteItem, 0, len(items))
 	for _, item := range items {
-		var attachment *isysin.AttachmentListModel
-		if isRemoteMedia(item.Type) {
-			var err error
-			attachment, err = transferRemoteMedia(ctx, item.Type, item.Content)
-			if err != nil {
-				g.Log().Warningf(ctx, "转存媒体失败 url:%s err:%+v", item.Content, err)
-			}
-		}
 		row := preparedNoteItem{
-			Item:       item,
-			Attachment: attachment,
+			Item: item,
 		}
 		if item.Type == noteTypeImage {
-			row.MediaPHash = mediaPHashFromAttachmentOrSource(ctx, attachment, item.Content, item.Type)
+			row.MediaPHash = mediaPHashFromAttachmentOrSource(ctx, nil, item.Content, item.Type)
 		}
 		prepared = append(prepared, row)
 	}
