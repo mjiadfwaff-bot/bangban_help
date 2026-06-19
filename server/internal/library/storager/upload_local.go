@@ -13,12 +13,15 @@ import (
 	"github.com/gogf/gf/v2/os/gfile"
 	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/util/gconv"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+const localUploadMaxBytes = int64(10 << 30)
 
 // LocalDrive 本地驱动
 type LocalDrive struct {
@@ -40,6 +43,9 @@ func (d *LocalDrive) Upload(ctx context.Context, file *ghttp.UploadFile) (fullPa
 		err = gerror.New("本地上传驱动必须配置本地存储路径!")
 		return
 	}
+	if err = ensureLocalUploadCapacity(ctx, file.Size); err != nil {
+		return
+	}
 
 	// 包含静态文件夹的路径
 	fullDirPath := strings.Trim(sp.String(), "/") + "/" + config.LocalPath + nowDate
@@ -54,6 +60,9 @@ func (d *LocalDrive) Upload(ctx context.Context, file *ghttp.UploadFile) (fullPa
 
 // CreateMultipart 创建分片事件
 func (d *LocalDrive) CreateMultipart(ctx context.Context, in *CheckMultipartParams) (mp *MultipartProgress, err error) {
+	if err = ensureLocalUploadCapacity(ctx, in.meta.Size); err != nil {
+		return nil, err
+	}
 	mp = new(MultipartProgress)
 	mp.UploadId = GenUploadId(ctx, in.Md5)
 	mp.Meta = in.meta
@@ -80,6 +89,9 @@ func (d *LocalDrive) UploadPart(ctx context.Context, in *UploadPartParams) (res 
 		err = gerror.New("本地上传驱动必须配置本地存储路径!")
 		return
 	}
+	if err = ensureLocalUploadCapacity(ctx, in.File.Size); err != nil {
+		return
+	}
 
 	// 分片文件存放路径
 	partFilePath := spStr + config.LocalPath + "tmp/" + in.Md5
@@ -100,6 +112,9 @@ func (d *LocalDrive) UploadPart(ctx context.Context, in *UploadPartParams) (res 
 
 	// 已全部上传完毕
 	if len(in.mp.UploadedIndex) == in.mp.ShardCount {
+		if err = ensureLocalUploadCapacity(ctx, in.mp.Meta.Size); err != nil {
+			return nil, err
+		}
 		// 删除进度统计
 		if err = DelMultipartProgress(ctx, in.mp); err != nil {
 			return nil, err
@@ -133,6 +148,54 @@ func (d *LocalDrive) UploadPart(ctx context.Context, in *UploadPartParams) (res 
 	// 计算上传进度
 	res.Progress = CalcUploadProgress(in.mp.UploadedIndex, in.mp.ShardCount)
 	return
+}
+
+func ensureLocalUploadCapacity(ctx context.Context, incoming int64) error {
+	if incoming < 0 {
+		incoming = 0
+	}
+	root, err := localUploadRoot(ctx)
+	if err != nil {
+		return err
+	}
+	used, err := localUploadUsedBytes(root)
+	if err != nil {
+		return gerror.Wrap(err, "统计本地上传目录容量失败")
+	}
+	if used+incoming > localUploadMaxBytes {
+		return gerror.Newf("本地上传存储已超过限制，当前约 %.2fGB，最大 10GB，请清理附件或切换对象存储", float64(used)/1024/1024/1024)
+	}
+	return nil
+}
+
+func localUploadRoot(ctx context.Context) (string, error) {
+	sp := g.Cfg().MustGet(ctx, "server.serverRoot")
+	if sp.IsEmpty() {
+		return "", gerror.New("本地上传驱动必须配置静态路径!")
+	}
+	if config.LocalPath == "" {
+		return "", gerror.New("本地上传驱动必须配置本地存储路径!")
+	}
+	return strings.Trim(sp.String(), "/") + "/" + strings.Trim(config.LocalPath, "/"), nil
+}
+
+func localUploadUsedBytes(root string) (int64, error) {
+	if !gfile.Exists(root) {
+		return 0, nil
+	}
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // MergePartFile 合并分片文件

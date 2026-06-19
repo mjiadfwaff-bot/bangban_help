@@ -25,8 +25,8 @@ import (
 
 const (
 	quickMediaCacheDir          = "storage/lazysheep_tggo/media_cache"
-	quickMediaCacheMaxBytes     = int64(6 << 30)
-	quickMediaCacheTargetBytes  = int64(4 << 30)
+	quickMediaCacheMaxBytes     = int64(10 << 30)
+	quickMediaCacheTargetBytes  = int64(8 << 30)
 	quickMediaCacheMaxAge       = 72 * time.Hour
 	quickMediaCacheCleanSpacing = 10 * time.Minute
 )
