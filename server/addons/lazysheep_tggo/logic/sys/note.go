@@ -70,6 +70,12 @@ type noteItem struct {
 	TgFileID    string  `json:"tgFileId"`
 }
 
+type preparedNoteItem struct {
+	Item       noteItem
+	Attachment *isysin.AttachmentListModel
+	MediaPHash string
+}
+
 func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) (res *sysin.NoteStoreModel, err error) {
 	if in == nil || strings.TrimSpace(in.Payload) == "" {
 		return nil, gerror.New("笔记原始内容不能为空")
@@ -96,6 +102,10 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 		return nil, err
 	}
 	contentID := parseInt(msg.ContentId)
+	preparedItems, err := s.prepareNoteItems(ctx, note.Items)
+	if err != nil {
+		return nil, err
+	}
 	code, err := s.genBindingNoteCode(ctx, botID, bindingID, contentID, msg.Id)
 	if err != nil {
 		return nil, err
@@ -131,13 +141,48 @@ func (s *sLazySheepTGGo) storeNote(ctx context.Context, in *sysin.NoteStoreInp) 
 		if err != nil {
 			return err
 		}
-		if err = s.replaceNoteItems(ctx, noteID, botID, note.Items); err != nil {
+		if err = s.replaceNoteItems(ctx, noteID, botID, preparedItems); err != nil {
 			return err
 		}
 		res = &sysin.NoteStoreModel{NoteId: noteID, Code: code}
 		return nil
 	})
 	return
+}
+
+func (s *sLazySheepTGGo) prepareNoteItems(ctx context.Context, items []noteItem) ([]preparedNoteItem, error) {
+	hasImage := false
+	for _, item := range items {
+		if item.Type == noteTypeImage {
+			hasImage = true
+			break
+		}
+	}
+	if hasImage {
+		if err := s.ensureNoteAssetPHashField(ctx); err != nil {
+			g.Log().Warningf(ctx, "确保笔记资源感知哈希字段失败 err:%+v", err)
+		}
+	}
+	prepared := make([]preparedNoteItem, 0, len(items))
+	for _, item := range items {
+		var attachment *isysin.AttachmentListModel
+		if isRemoteMedia(item.Type) {
+			var err error
+			attachment, err = transferRemoteMedia(ctx, item.Type, item.Content)
+			if err != nil {
+				g.Log().Warningf(ctx, "转存媒体失败 url:%s err:%+v", item.Content, err)
+			}
+		}
+		row := preparedNoteItem{
+			Item:       item,
+			Attachment: attachment,
+		}
+		if item.Type == noteTypeImage {
+			row.MediaPHash = mediaPHashFromAttachmentOrSource(ctx, attachment, item.Content, item.Type)
+		}
+		prepared = append(prepared, row)
+	}
+	return prepared, nil
 }
 
 type noteStoreRow struct {
@@ -221,7 +266,7 @@ func upsertNoteByBindingContent(ctx context.Context, bindingID int, contentID in
 	return 0, gerror.Wrap(err, "新增记录失败")
 }
 
-func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, botID int, items []noteItem) error {
+func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, botID int, items []preparedNoteItem) error {
 	cols := dao.AddonLazysheepTggoNoteItem.Columns()
 	if _, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Where(cols.NoteId, noteID).Delete(); err != nil {
 		return gerror.Wrap(err, "清理旧笔记项失败")
@@ -230,7 +275,8 @@ func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, bot
 	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Where(assetCols.NoteId, noteID).Delete(); err != nil {
 		return gerror.Wrap(err, "清理旧笔记资源失败")
 	}
-	for index, item := range items {
+	for index, prepared := range items {
+		item := prepared.Item
 		row := g.Map{
 			cols.NoteId:      noteID,
 			cols.ItemIndex:   index,
@@ -243,23 +289,17 @@ func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, bot
 			cols.VerifyVideo: boolToInt(item.VerifyVideo),
 			cols.Status:      1,
 		}
-		var attachment *isysin.AttachmentListModel
-		if isRemoteMedia(item.Type) {
-			attachment, err := transferRemoteMedia(ctx, item.Type, item.Content)
-			if err != nil {
-				g.Log().Warningf(ctx, "转存媒体失败 noteId:%d url:%s err:%+v", noteID, item.Content, err)
-			} else if attachment != nil {
-				row[cols.AttachmentId] = attachment.Id
-				row[cols.PreviewUrl] = attachment.FileUrl
-				row[cols.LocalPath] = attachment.Path
-			}
+		if prepared.Attachment != nil {
+			row[cols.AttachmentId] = prepared.Attachment.Id
+			row[cols.PreviewUrl] = prepared.Attachment.FileUrl
+			row[cols.LocalPath] = prepared.Attachment.Path
 		}
 		itemID, err := dao.AddonLazysheepTggoNoteItem.Ctx(ctx).Data(row).InsertAndGetId()
 		if err != nil {
 			return gerror.Wrap(err, "保存笔记项失败")
 		}
 		if isRemoteMedia(item.Type) {
-			if err = s.insertNoteAsset(ctx, noteID, int64(botID), itemID, index, item, attachment); err != nil {
+			if err = s.insertNoteAsset(ctx, noteID, int64(botID), itemID, index, prepared); err != nil {
 				return err
 			}
 		}
@@ -267,7 +307,8 @@ func (s *sLazySheepTGGo) replaceNoteItems(ctx context.Context, noteID int64, bot
 	return nil
 }
 
-func (s *sLazySheepTGGo) insertNoteAsset(ctx context.Context, noteID int64, botID int64, itemID int64, index int, item noteItem, attachment *isysin.AttachmentListModel) error {
+func (s *sLazySheepTGGo) insertNoteAsset(ctx context.Context, noteID int64, botID int64, itemID int64, index int, prepared preparedNoteItem) error {
+	item := prepared.Item
 	cols := dao.AddonLazysheepTggoNoteAsset.Columns()
 	assetType := "image"
 	if item.Type == noteTypeVideo {
@@ -288,17 +329,13 @@ func (s *sLazySheepTGGo) insertNoteAsset(ctx context.Context, noteID int64, botI
 		cols.Sort:          index,
 		cols.Status:        1,
 	}
-	if attachment != nil {
-		row[cols.AttachmentId] = attachment.Id
-		row[cols.PreviewUrl] = attachment.FileUrl
-		row[cols.LocalPath] = attachment.Path
+	if prepared.Attachment != nil {
+		row[cols.AttachmentId] = prepared.Attachment.Id
+		row[cols.PreviewUrl] = prepared.Attachment.FileUrl
+		row[cols.LocalPath] = prepared.Attachment.Path
 	}
-	if assetType == "image" {
-		if err := s.ensureNoteAssetPHashField(ctx); err != nil {
-			g.Log().Warningf(ctx, "确保笔记资源感知哈希字段失败 err:%+v", err)
-		} else if phash := mediaPHashFromAttachmentOrSource(ctx, attachment, item.Content, item.Type); phash != "" {
-			row["media_phash"] = phash
-		}
+	if assetType == "image" && prepared.MediaPHash != "" {
+		row["media_phash"] = prepared.MediaPHash
 	}
 	if _, err := dao.AddonLazysheepTggoNoteAsset.Ctx(ctx).Data(row).Insert(); err != nil {
 		return gerror.Wrap(err, "保存笔记资源失败")

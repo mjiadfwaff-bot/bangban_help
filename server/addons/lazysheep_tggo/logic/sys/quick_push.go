@@ -47,6 +47,7 @@ const (
 	quickMediaMaxBytes            = 48 << 20
 	quickPhotoMaxBytes            = 10 << 20
 	quickPhotoCompressTargetBytes = 9500 << 10
+	quickPhotoGroupTargetBytes    = 4200 << 10
 	quickMediaGroupMaxUploadBytes = 45 << 20
 	quickMediaGroupTargetBytes    = 42 << 20
 	quickMediaDownloadConcurrency = 8
@@ -466,23 +467,64 @@ func limitMediaPrepareErrors(items []string) string {
 }
 
 func compressQuickPhotoForTelegram(data []byte) (filename string, out []byte, err error) {
+	return compressQuickPhotoWithinLimit(data, quickPhotoCompressTargetBytes)
+}
+
+func compressQuickPhotoWithinLimit(data []byte, limit int) (filename string, out []byte, err error) {
+	if limit <= 0 {
+		limit = quickPhotoCompressTargetBytes
+	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return "", nil, gerror.Wrap(err, "解码图片失败")
 	}
-	if encoded := encodeQuickJPEGWithinLimit(img, quickPhotoCompressTargetBytes); len(encoded) > 0 {
+	img = resizeQuickImageForTelegramPhoto(img)
+	if encoded := encodeQuickJPEGWithinLimit(img, limit); len(encoded) > 0 {
 		return "photo.jpg", encoded, nil
 	}
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	for _, scale := range []float64{0.9, 0.8, 0.7, 0.6, 0.5, 0.4} {
+	for _, scale := range []float64{0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32, 0.25} {
 		resized := resizeQuickImage(img, int(float64(width)*scale), int(float64(height)*scale))
-		if encoded := encodeQuickJPEGWithinLimit(resized, quickPhotoCompressTargetBytes); len(encoded) > 0 {
+		if encoded := encodeQuickJPEGWithinLimit(resized, limit); len(encoded) > 0 {
 			return "photo.jpg", encoded, nil
 		}
 	}
 	return "", nil, gerror.New("图片压缩后仍超过 Telegram photo 限制")
+}
+
+func resizeQuickImageForTelegramPhoto(img image.Image) image.Image {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return img
+	}
+	maxSide := 2560
+	minSide := width
+	if height < minSide {
+		minSide = height
+	}
+	maxActualSide := width
+	if height > maxActualSide {
+		maxActualSide = height
+	}
+	scale := 1.0
+	if maxActualSide > maxSide {
+		scale = float64(maxSide) / float64(maxActualSide)
+	}
+	if minSide > 0 && maxActualSide/minSide > 20 {
+		if width > height {
+			scale = float64(height*20) / float64(width)
+		} else {
+			scale = float64(width*20) / float64(height)
+		}
+	}
+	if scale >= 1 {
+		return img
+	}
+	return resizeQuickImage(img, int(float64(width)*scale), int(float64(height)*scale))
 }
 
 func compressQuickVideoForTelegram(ctx context.Context, asset quickMediaAsset, targetBytes int) (quickMediaAsset, error) {
@@ -803,8 +845,8 @@ func prepareQuickMediaGroupForTelegram(ctx context.Context, assets []quickMediaA
 	}
 	out := append([]quickMediaAsset(nil), assets...)
 	for i, asset := range out {
-		if asset.Type == noteTypeImage && strings.TrimSpace(asset.TgFileID) == "" && len(asset.Data) > quickPhotoMaxBytes {
-			name, data, err := compressQuickPhotoForTelegram(asset.Data)
+		if asset.Type == noteTypeImage && strings.TrimSpace(asset.TgFileID) == "" && len(asset.Data) > quickPhotoGroupTargetBytes {
+			name, data, err := compressQuickPhotoWithinLimit(asset.Data, quickPhotoGroupTargetBytes)
 			if err != nil {
 				return nil, gerror.Wrap(err, "图片超过 Telegram 限制且压缩失败")
 			}
@@ -833,7 +875,27 @@ func prepareQuickMediaGroupForTelegram(ctx context.Context, assets []quickMediaA
 	}
 	remaining := quickMediaGroupTargetBytes - fixedBytes
 	if remaining <= len(videoIndexes)*512*1024 {
-		return nil, gerror.Newf("媒体组图片体积过大，无法为视频保留压缩空间 fixed:%d target:%d", fixedBytes, quickMediaGroupTargetBytes)
+		for i, asset := range out {
+			if asset.Type != noteTypeImage || strings.TrimSpace(asset.TgFileID) != "" || len(asset.Data) <= 0 {
+				continue
+			}
+			name, data, err := compressQuickPhotoWithinLimit(asset.Data, 2600<<10)
+			if err != nil {
+				return nil, gerror.Wrapf(err, "媒体组图片二次压缩失败 index:%d", i)
+			}
+			out[i].Filename = quickCompressedMediaFilename(asset.Filename, name)
+			out[i].Data = data
+		}
+		fixedBytes = 0
+		for _, asset := range out {
+			if strings.TrimSpace(asset.TgFileID) == "" && asset.Type != noteTypeVideo {
+				fixedBytes += len(asset.Data)
+			}
+		}
+		remaining = quickMediaGroupTargetBytes - fixedBytes
+		if remaining <= len(videoIndexes)*512*1024 {
+			return nil, gerror.Newf("媒体组图片体积过大，无法为视频保留压缩空间 fixed:%d target:%d", fixedBytes, quickMediaGroupTargetBytes)
+		}
 	}
 	perVideoTarget := remaining / len(videoIndexes)
 	for _, index := range videoIndexes {
@@ -1207,7 +1269,7 @@ func cachedTelegramFileIDBySourceURL(ctx context.Context, rawURL string) (string
 		WhereNot(assetCols.TgFileId, "").
 		OrderDesc(assetCols.Id).
 		Scan(&row); err != nil {
-		g.Log().Warningf(ctx, "查询 Telegram file_id 缓存失败 url:%s err:%+v", rawURL, err)
+		g.Log().Debugf(ctx, "未命中 Telegram file_id 缓存 url:%s err:%+v", rawURL, err)
 		return "", ""
 	}
 	mediaType := noteTypeImage

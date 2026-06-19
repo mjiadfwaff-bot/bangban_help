@@ -631,16 +631,17 @@ func (s *sLazySheepTGGo) ClearBindingNotes(ctx context.Context, botKey string, c
 
 func retryPullAction(ctx context.Context, label string, action func() error) error {
 	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
+	const maxAttempts = 6
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err = action()
 		if err == nil {
 			return nil
 		}
-		if !isRetriablePullError(err) || attempt == 3 {
+		if !isRetriablePullError(err) || attempt == maxAttempts {
 			return err
 		}
 		g.Log().Warningf(ctx, "%s %s 第%d次失败，准备重试 err:%+v", pullTraceTag(ctx), label, attempt, err)
-		delay := time.Duration(attempt)*2*time.Second + time.Duration(attempt*137)*time.Millisecond
+		delay := time.Duration(attempt*attempt)*time.Second + time.Duration(attempt*137)*time.Millisecond
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
