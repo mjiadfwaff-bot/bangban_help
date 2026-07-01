@@ -487,6 +487,7 @@ pullLocked:
 				summary.PushQueued++
 			} else {
 				summary.Skipped++
+				summary.PushDeduped++
 				if in.Sync && task != nil && task.TaskID == 0 && stored.NoteId > 0 {
 					if err := s.deleteNoteRows(ctx, []int64{stored.NoteId}); err != nil {
 						g.Log().Warningf(ctx, "清理同步重复笔记失败 botKey:%s binding:%s note:%d err:%+v", in.BotKey, binding.Key, stored.NoteId, err)
@@ -687,6 +688,7 @@ type pullSummary struct {
 	Deduped          int
 	Skipped          int
 	OldCursorSkipped int
+	PushDeduped      int
 	NonNotes         int
 	Failed           int
 	PushFailed       int
@@ -697,11 +699,35 @@ func (s *pullSummary) Message() string {
 	message := fmt.Sprintf("采集完成：获取 %d 条，准备开始推送 %d 条。", s.Fetched, s.PushQueued)
 	if s.Deduped > 0 || s.Skipped > 0 || s.Failed > 0 || s.PushFailed > 0 {
 		message += fmt.Sprintf("\n已跳过 %d 条，失败 %d 条。", s.Deduped+s.Skipped, s.Failed+s.PushFailed)
+		if detail := s.SkipDetailText(); detail != "" {
+			message += "\n跳过原因：" + detail
+		}
 	}
 	if errText := s.ErrorText(); errText != "" {
 		message += "\n失败原因：" + errText
 	}
 	return message
+}
+
+func (s *pullSummary) SkipDetailText() string {
+	if s == nil {
+		return ""
+	}
+	details := make([]string, 0, 4)
+	if s.Deduped > 0 {
+		details = append(details, fmt.Sprintf("采集重复 %d 条", s.Deduped))
+	}
+	if s.PushDeduped > 0 {
+		details = append(details, fmt.Sprintf("推送重复 %d 条", s.PushDeduped))
+	}
+	if s.OldCursorSkipped > 0 {
+		details = append(details, fmt.Sprintf("旧笔记 %d 条", s.OldCursorSkipped))
+	}
+	otherSkipped := s.Skipped - s.OldCursorSkipped - s.PushDeduped
+	if otherSkipped > 0 {
+		details = append(details, fmt.Sprintf("其他 %d 条", otherSkipped))
+	}
+	return strings.Join(details, "，")
 }
 
 func (s *pullSummary) AddError(label string, err error) {

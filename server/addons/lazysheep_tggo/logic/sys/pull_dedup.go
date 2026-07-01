@@ -15,7 +15,7 @@ import (
 	"hotgo/internal/library/cache"
 )
 
-const pullDedupTTL = time.Hour * 24 * 180
+const pullDedupTTL = time.Hour * 24 * 7
 
 type noteMediaFingerprint struct {
 	Kind string   `json:"kind"`
@@ -73,11 +73,37 @@ func pullDedupSeen(ctx context.Context, scope, fingerprint string) (bool, error)
 	if strings.TrimSpace(scope) == "" || strings.TrimSpace(fingerprint) == "" {
 		return false, nil
 	}
-	val, err := cache.Instance().Get(ctx, pullDedupKey(scope, fingerprint))
+	cacheKey := pullDedupKey(scope, fingerprint)
+	val, err := cache.Instance().Get(ctx, cacheKey)
 	if err != nil {
 		return false, gerror.Wrap(err, "查询重复采集记录失败")
 	}
-	return !val.IsNil() && val.String() != "", nil
+	if val.IsNil() || val.String() == "" {
+		return false, nil
+	}
+	var record pullDedupRecord
+	if err = json.Unmarshal([]byte(val.String()), &record); err != nil {
+		return true, nil
+	}
+	if pullDedupRecordFresh(record, time.Now()) {
+		return true, nil
+	}
+	if _, err = cache.Instance().Remove(ctx, cacheKey); err != nil {
+		return false, gerror.Wrap(err, "删除过期重复采集记录失败")
+	}
+	return false, nil
+}
+
+func pullDedupRecordFresh(record pullDedupRecord, now time.Time) bool {
+	seenAt := strings.TrimSpace(record.SeenAt)
+	if seenAt == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, seenAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(t) < pullDedupTTL
 }
 
 func pullDedupRemember(ctx context.Context, scope, fingerprint string, noteID int64, sourceURLs []string) error {

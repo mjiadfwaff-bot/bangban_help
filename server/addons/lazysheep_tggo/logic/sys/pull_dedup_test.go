@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"testing"
+	"time"
 
 	"hotgo/addons/lazysheep_tggo/model"
 )
@@ -50,6 +51,28 @@ func TestNoteFingerprintWithoutMediaIsEmpty(t *testing.T) {
 	}})
 	if fingerprint != "" {
 		t.Fatalf("expected empty fingerprint for note without media, got %s", fingerprint)
+	}
+}
+
+func TestPullDedupRecordFreshUsesSevenDayWindow(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	fresh := pullDedupRecord{SeenAt: now.Add(-7*24*time.Hour + time.Second).Format(time.RFC3339)}
+	if !pullDedupRecordFresh(fresh, now) {
+		t.Fatal("record inside 7 days should be treated as duplicate")
+	}
+	expired := pullDedupRecord{SeenAt: now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)}
+	if pullDedupRecordFresh(expired, now) {
+		t.Fatal("record at or beyond 7 days should not be treated as duplicate")
+	}
+}
+
+func TestPullDedupRecordFreshKeepsUnknownLegacyRecords(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	if !pullDedupRecordFresh(pullDedupRecord{}, now) {
+		t.Fatal("legacy record without seenAt should stay duplicate")
+	}
+	if !pullDedupRecordFresh(pullDedupRecord{SeenAt: "bad-time"}, now) {
+		t.Fatal("legacy record with invalid seenAt should stay duplicate")
 	}
 }
 
